@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, count_distinct, explode, split
+from pyspark.sql.functions import col, count, count_distinct, explode, split, monotonically_increasing_id
 
 # 1. Crear la sesión de Spark
 spark = (
@@ -23,12 +23,14 @@ path_productos = (project_root / "data" / "DataSet" / "Products" / "ProductCateg
 path_categorias = (project_root / "data" / "DataSet" / "Products" / "Categories.csv").resolve().as_posix()
 
 # 3. Lectura de los DataFrames
+# SOLUCIÓN: Mapeamos 'cliente_id' y creamos un identificador único por transacción ('tx_id') antes del explode
 df_transacciones = (
     spark.read.csv(transaction_files, sep="|", header=False, inferSchema=True)
-    .toDF("fecha", "tienda_id", "ticket_id", "productos")
+    .toDF("fecha", "tienda_id", "cliente_id", "productos")
+    .withColumn("tx_id", monotonically_increasing_id())
 )
 
-# SOLUCIÓN: Renombrar las columnas problemáticas inmediatamente después de leerlas
+# Renombrar las columnas problemáticas inmediatamente después de leerlas
 df_product_category = (
     spark.read.csv(path_productos, sep="|", header=True, inferSchema=True)
     .withColumnRenamed("v.Code_pr", "codigo_producto")
@@ -65,8 +67,8 @@ df_completo = df_detalles.join(
 
 # 1. KPIs Globales
 df_kpis = df_detalles.agg(
-    count("*").alias("total_unidades_vendidas"), 
-    count_distinct("ticket_id").alias("total_transacciones") 
+    count("*").alias("total_unidades_vendidas"), # Total de unidades vendidas (suma de cantidades) 
+    count_distinct("tx_id").alias("total_transacciones") # Conteo total de transacciones registradas usando el ID único 
 )
 
 # 2. Top 10 Productos
@@ -77,15 +79,18 @@ df_top_productos = (
     .limit(10)
 )
 
-# 3. Top 10 Clientes (Adaptado a Tickets/Tiendas por estructura de datos) 
-df_top_tickets = (
-    df_detalles.groupBy("ticket_id", "tienda_id")
-    .agg(count("*").alias("volumen_compra"))
+# 3. Top 10 Clientes (CORREGIDO: Agrupado por el cliente_id real obtenido de la auditoría visual) 
+df_top_clientes = (
+    df_detalles.groupBy("cliente_id")
+    .agg(
+        count_distinct("tx_id").alias("frecuencia_transacciones"), # Número de visitas/compras distintas 
+        count("*").alias("volumen_compra") # Total de productos adquiridos 
+    )
     .orderBy(col("volumen_compra").desc())
     .limit(10)
 )
 
-# 4. Categorías más rentables (Inferido por volumen, ya que no hay precios) 
+# 4. Categorías más rentables (Inferido por volumen, ya que no hay precios) [cite: 14, 20]
 df_categorias_rentables = (
     df_completo.groupBy("nombre_categoria")
     .agg(count("*").alias("unidades_vendidas"))
@@ -101,21 +106,20 @@ df_serie_tiempo = (
     df_detalles.groupBy("fecha")
     .agg(
         count("*").alias("unidades_vendidas"),
-        count_distinct("ticket_id").alias("transacciones_diarias")
+        count_distinct("tx_id").alias("transacciones_diarias")
     )
     .orderBy("fecha")
 )
 
-# 2. Datos para Boxplot (Distribución de totales por ticket) 
+# 2. Datos para Boxplot (CORREGIDO: Distribución de totales por cliente según el requerimiento explícito) 
 df_boxplot = (
-    df_detalles.groupBy("ticket_id")
-    .agg(count("*").alias("cantidad_total_ticket"))
+    df_detalles.groupBy("cliente_id")
+    .agg(count("*").alias("cantidad_total_cliente"))
 )
 
 # ==========================================
 # PERSISTENCIA EN POSTGRESQL
 # ==========================================
-# Reemplaza con tus credenciales reales
 DB_URL = "jdbc:postgresql://localhost:5432/supermercado_db"
 DB_PROPERTIES = {
     "user": "postgres",
@@ -132,7 +136,7 @@ def guardar_en_db(df, tabla):
 
 guardar_en_db(df_kpis, "kpis_globales")
 guardar_en_db(df_top_productos, "top_productos")
-guardar_en_db(df_top_tickets, "top_clientes_tickets")
+guardar_en_db(df_top_clientes, "top_clientes") # Nombre de tabla actualizado a la lógica de negocio
 guardar_en_db(df_categorias_rentables, "categorias_rentables")
 guardar_en_db(df_serie_tiempo, "serie_tiempo")
 guardar_en_db(df_boxplot, "boxplot_data")
