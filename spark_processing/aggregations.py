@@ -1,25 +1,42 @@
 import os
 import platform
+import subprocess
+import sys
 from pathlib import Path
+
+os.environ.setdefault("PGCLIENTENCODING", "UTF8")
+
+# En Windows PySpark respeta SPARK_HOME si existe. Si apunta a una carpeta
+# incompleta, intenta lanzar C:\spark\bin\spark-submit.cmd y falla con WinError 2.
+is_windows = platform.system().lower().startswith("win")
+if is_windows:
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+    spark_home = os.getenv("SPARK_HOME")
+    spark_submit = Path(spark_home or "") / "bin" / "spark-submit.cmd"
+    if spark_home and not spark_submit.exists():
+        print(
+            f"[Config] SPARK_HOME='{spark_home}' no contiene bin/spark-submit.cmd. "
+            "Se ignora para usar la instalacion incluida con pyspark."
+        )
+        os.environ.pop("SPARK_HOME", None)
+
+try:
+    import psycopg2
+except ImportError as exc:
+    raise ImportError("Falta psycopg2-binary. Instálalo con: pip install psycopg2-binary") from exc
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, count, count_distinct, explode, split, monotonically_increasing_id, trim
 
 # 1. Crear la sesión de Spark
-# Nota: En Windows, activar `spark.jars.packages` suele exigir winutils/HADOOP_HOME.
-# Por eso, por defecto desactivamos la persistencia JDBC en Windows.
-is_windows = platform.system().lower().startswith("win")
-default_enable_db_write = "0" if is_windows else "1"
-ENABLE_DB_WRITE = os.getenv("ENABLE_DB_WRITE", default_enable_db_write).strip().lower() in {"1", "true", "yes"}
+ENABLE_DB_WRITE = os.getenv("ENABLE_DB_WRITE", "1").strip().lower() in {"1", "true", "yes"}
 
 spark_builder = (
     SparkSession.builder
     .appName("SupermercadoIngestion")
+    .master("local[*]")
     .config("spark.sql.shuffle.partitions", "4")
 )
-
-if ENABLE_DB_WRITE:
-    # Descarga el driver JDBC de PostgreSQL
-    spark_builder = spark_builder.config("spark.jars.packages", "org.postgresql:postgresql:42.7.3")
 
 spark = spark_builder.getOrCreate()
 
@@ -121,7 +138,9 @@ df_top_clientes = (
 
 # 4. Categorías más rentables
 df_categorias_rentables = (
-    df_completo.groupBy("nombre_categoria")
+    df_completo
+    .filter(col("nombre_categoria") != "Producto sin Categoría")
+    .groupBy("nombre_categoria")
     .agg(count("*").alias("unidades_vendidas"))
     .orderBy(col("unidades_vendidas").desc())
     .limit(10)
@@ -150,35 +169,228 @@ df_boxplot = (
 # ==========================================
 # PERSISTENCIA / AUDITORÍA EN CONSOLA
 # ==========================================
-def guardar_en_db(df, nombre_tabla):
-    """Guarda el DataFrame directamente en la base de datos PostgreSQL."""
-    print(f"\n[Persistencia] Guardando tabla '{nombre_tabla}' en PostgreSQL...")
-    
-    # Configuración de tu base de datos (ajusta tus credenciales)
-    db_host = os.getenv("POSTGRES_HOST", "localhost")
+def conectar_postgres():
+    db_host = os.getenv("POSTGRES_HOST", "127.0.0.1")
     db_port = os.getenv("POSTGRES_PORT", "5432")
     db_name = os.getenv("POSTGRES_DB", "supermercado_db")
     db_user = os.getenv("POSTGRES_USER", "postgres")
-    db_password = os.getenv("POSTGRES_PASSWORD", "tu_password")
 
-    url_jdbc = f"jdbc:postgresql://{db_host}:{db_port}/{db_name}"
-    propiedades = {
-        "user": db_user,
-        "password": db_password,
-        "driver": "org.postgresql.Driver"
-    }
-    
-    # Guardamos sobreescribiendo para actualizar los KPIs con los datos limpios
-    df.write.jdbc(url=url_jdbc, table=nombre_tabla, mode="overwrite", properties=propiedades)
-    print(f"[Persistencia] Tabla '{nombre_tabla}' guardada con éxito.")
+    print(f"[Persistencia] Conectando a PostgreSQL en {db_host}:{db_port}/{db_name} como {db_user}...")
+
+    return psycopg2.connect(
+        host=db_host,
+        port=db_port,
+        database=db_name,
+        user=db_user,
+        password=os.getenv("POSTGRES_PASSWORD", "tu_password"),
+        connect_timeout=10,
+        options="-c client_encoding=UTF8",
+    )
+
+
+def recrear_tabla(cursor, nombre_tabla, columnas_sql):
+    cursor.execute(f"DROP TABLE IF EXISTS {nombre_tabla}")
+    cursor.execute(f"CREATE TABLE {nombre_tabla} ({columnas_sql})")
+
+
+def df_a_rows(df, columnas):
+    return [tuple(row[columna] for columna in columnas) for row in df.collect()]
+
+
+def guardar_rows(cursor, nombre_tabla, columnas, rows):
+    if not rows:
+        print(f"[Persistencia] Tabla '{nombre_tabla}' no tiene filas para guardar.")
+        return
+
+    placeholders = ", ".join(["%s"] * len(columnas))
+    columnas_sql = ", ".join(columnas)
+    cursor.executemany(
+        f"INSERT INTO {nombre_tabla} ({columnas_sql}) VALUES ({placeholders})",
+        rows,
+    )
+    print(f"[Persistencia] Tabla '{nombre_tabla}' guardada con {len(rows)} filas.")
+
+
+def sql_literal(value):
+    if value is None:
+        return "NULL"
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def sql_value(value):
+    if value is None:
+        return "NULL"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return sql_literal(value)
+
+
+def insert_sql(nombre_tabla, columnas, rows):
+    if not rows:
+        return []
+
+    columnas_sql = ", ".join(columnas)
+    statements = []
+    chunk_size = 500
+
+    for start in range(0, len(rows), chunk_size):
+        chunk = rows[start:start + chunk_size]
+        values_sql = ",\n".join(
+            "(" + ", ".join(sql_value(value) for value in row) + ")"
+            for row in chunk
+        )
+        statements.append(f"INSERT INTO {nombre_tabla} ({columnas_sql}) VALUES\n{values_sql};")
+
+    return statements
+
+
+def guardar_en_db_con_docker(tablas):
+    print("[Persistencia] Usando docker exec + psql como alternativa a psycopg2...")
+
+    sql = [
+        "BEGIN;",
+        "DROP TABLE IF EXISTS kpis_globales;",
+        "DROP TABLE IF EXISTS top_productos;",
+        "DROP TABLE IF EXISTS top_clientes;",
+        "DROP TABLE IF EXISTS categorias_rentables;",
+        "DROP TABLE IF EXISTS serie_tiempo;",
+        "DROP TABLE IF EXISTS boxplot_clientes;",
+        "CREATE TABLE kpis_globales (total_unidades_vendidas BIGINT, total_transacciones BIGINT);",
+        "CREATE TABLE top_productos (id_producto INTEGER, unidades_vendidas BIGINT);",
+        "CREATE TABLE top_clientes (cliente_id INTEGER, frecuencia_transacciones BIGINT, volumen_compra BIGINT);",
+        "CREATE TABLE categorias_rentables (nombre_categoria TEXT, unidades_vendidas BIGINT);",
+        "CREATE TABLE serie_tiempo (fecha DATE, unidades_vendidas BIGINT, transacciones_diarias BIGINT);",
+        "CREATE TABLE boxplot_clientes (cliente_id INTEGER, cantidad_total_cliente BIGINT);",
+    ]
+
+    for nombre_tabla, columnas, rows in tablas:
+        sql.extend(insert_sql(nombre_tabla, columnas, rows))
+        print(f"[Persistencia] Tabla '{nombre_tabla}' preparada con {len(rows)} filas.")
+
+    sql.append("COMMIT;")
+
+    command = [
+        "docker",
+        "exec",
+        "-i",
+        "supermercado-postgres",
+        "psql",
+        "-U",
+        os.getenv("POSTGRES_USER", "postgres"),
+        "-d",
+        os.getenv("POSTGRES_DB", "supermercado_db"),
+    ]
+
+    result = subprocess.run(
+        command,
+        input="\n".join(sql),
+        text=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+
+    if result.returncode != 0:
+        print(result.stdout)
+        print(result.stderr)
+        raise RuntimeError("No se pudieron cargar las tablas con docker exec psql.")
+
+    print("[Persistencia] Tablas cargadas correctamente usando docker exec psql.")
+
+
+def guardar_en_db():
+    print("\n[Persistencia] Guardando tablas analíticas en PostgreSQL...")
+
+    tablas = [
+        (
+            "kpis_globales",
+            ["total_unidades_vendidas", "total_transacciones"],
+            df_a_rows(df_kpis, ["total_unidades_vendidas", "total_transacciones"]),
+        ),
+        (
+            "top_productos",
+            ["id_producto", "unidades_vendidas"],
+            df_a_rows(df_top_productos, ["id_producto", "unidades_vendidas"]),
+        ),
+        (
+            "top_clientes",
+            ["cliente_id", "frecuencia_transacciones", "volumen_compra"],
+            df_a_rows(df_top_clientes, ["cliente_id", "frecuencia_transacciones", "volumen_compra"]),
+        ),
+        (
+            "categorias_rentables",
+            ["nombre_categoria", "unidades_vendidas"],
+            df_a_rows(df_categorias_rentables, ["nombre_categoria", "unidades_vendidas"]),
+        ),
+        (
+            "serie_tiempo",
+            ["fecha", "unidades_vendidas", "transacciones_diarias"],
+            df_a_rows(df_serie_tiempo, ["fecha", "unidades_vendidas", "transacciones_diarias"]),
+        ),
+        (
+            "boxplot_clientes",
+            ["cliente_id", "cantidad_total_cliente"],
+            df_a_rows(df_boxplot, ["cliente_id", "cantidad_total_cliente"]),
+        ),
+    ]
+
+    try:
+        conn = conectar_postgres()
+    except Exception as exc:
+        print(f"[Persistencia] psycopg2 no pudo conectar: {type(exc).__name__}: {exc}")
+        guardar_en_db_con_docker(tablas)
+        return
+
+    with conn:
+        with conn.cursor() as cursor:
+            recrear_tabla(cursor, "kpis_globales", "total_unidades_vendidas BIGINT, total_transacciones BIGINT")
+            recrear_tabla(cursor, "top_productos", "id_producto INTEGER, unidades_vendidas BIGINT")
+            recrear_tabla(cursor, "top_clientes", "cliente_id INTEGER, frecuencia_transacciones BIGINT, volumen_compra BIGINT")
+            recrear_tabla(cursor, "categorias_rentables", "nombre_categoria TEXT, unidades_vendidas BIGINT")
+            recrear_tabla(cursor, "serie_tiempo", "fecha DATE, unidades_vendidas BIGINT, transacciones_diarias BIGINT")
+            recrear_tabla(cursor, "boxplot_clientes", "cliente_id INTEGER, cantidad_total_cliente BIGINT")
+
+            guardar_rows(
+                cursor,
+                "kpis_globales",
+                ["total_unidades_vendidas", "total_transacciones"],
+                tablas[0][2],
+            )
+            guardar_rows(
+                cursor,
+                "top_productos",
+                ["id_producto", "unidades_vendidas"],
+                tablas[1][2],
+            )
+            guardar_rows(
+                cursor,
+                "top_clientes",
+                ["cliente_id", "frecuencia_transacciones", "volumen_compra"],
+                tablas[2][2],
+            )
+            guardar_rows(
+                cursor,
+                "categorias_rentables",
+                ["nombre_categoria", "unidades_vendidas"],
+                tablas[3][2],
+            )
+            guardar_rows(
+                cursor,
+                "serie_tiempo",
+                ["fecha", "unidades_vendidas", "transacciones_diarias"],
+                tablas[4][2],
+            )
+            guardar_rows(
+                cursor,
+                "boxplot_clientes",
+                ["cliente_id", "cantidad_total_cliente"],
+                tablas[5][2],
+            )
+
+    print("[Persistencia] Proceso terminado correctamente.")
+
 
 if ENABLE_DB_WRITE:
-    guardar_en_db(df_kpis, "kpis_globales")
-    guardar_en_db(df_top_productos, "top_productos")
-    guardar_en_db(df_top_clientes, "top_clientes")
-    guardar_en_db(df_categorias_rentables, "categorias_rentables")
-    guardar_en_db(df_serie_tiempo, "serie_tiempo")
-    guardar_en_db(df_boxplot, "boxplot_clientes")
+    guardar_en_db()
 else:
     print("\n[Persistencia] ENABLE_DB_WRITE=0 -> no se escribieron tablas en PostgreSQL.")
 
