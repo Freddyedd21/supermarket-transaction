@@ -1,14 +1,27 @@
+import os
+import platform
 from pathlib import Path
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, count, count_distinct, explode, split, monotonically_increasing_id, trim
 
 # 1. Crear la sesión de Spark
-spark = (
+# Nota: En Windows, activar `spark.jars.packages` suele exigir winutils/HADOOP_HOME.
+# Por eso, por defecto desactivamos la persistencia JDBC en Windows.
+is_windows = platform.system().lower().startswith("win")
+default_enable_db_write = "0" if is_windows else "1"
+ENABLE_DB_WRITE = os.getenv("ENABLE_DB_WRITE", default_enable_db_write).strip().lower() in {"1", "true", "yes"}
+
+spark_builder = (
     SparkSession.builder
     .appName("SupermercadoIngestion")
     .config("spark.sql.shuffle.partitions", "4")
-    .getOrCreate()
 )
+
+if ENABLE_DB_WRITE:
+    # Descarga el driver JDBC de PostgreSQL
+    spark_builder = spark_builder.config("spark.jars.packages", "org.postgresql:postgresql:42.7.3")
+
+spark = spark_builder.getOrCreate()
 
 # 2. Rutas de los archivos
 project_root = Path(__file__).resolve().parent.parent
@@ -52,7 +65,7 @@ df_categorias = (
 # A. Normalización: Expandir la lista de productos separada por espacios
 df_detalles = (
     df_transacciones
-    .withColumn("id_producto", explode(split(trim(col("productos")), " ")))
+    .withColumn("id_producto", explode(split(trim(col("productos")), r"\s+")))
     .withColumn("id_producto", trim(col("id_producto")).cast("int"))
 )
 
@@ -111,6 +124,7 @@ df_categorias_rentables = (
     df_completo.groupBy("nombre_categoria")
     .agg(count("*").alias("unidades_vendidas"))
     .orderBy(col("unidades_vendidas").desc())
+    .limit(10)
 )
 
 # ==========================================
@@ -136,16 +150,36 @@ df_boxplot = (
 # ==========================================
 # PERSISTENCIA / AUDITORÍA EN CONSOLA
 # ==========================================
-def guardar_en_db(df, tabla):
-    """Simula el guardado imprimiendo los resultados limpios en consola."""
-    print(f"\n[{tabla}] procesada exitosamente. Muestra:")
-    df.show(10, truncate=False)
+def guardar_en_db(df, nombre_tabla):
+    """Guarda el DataFrame directamente en la base de datos PostgreSQL."""
+    print(f"\n[Persistencia] Guardando tabla '{nombre_tabla}' en PostgreSQL...")
+    
+    # Configuración de tu base de datos (ajusta tus credenciales)
+    db_host = os.getenv("POSTGRES_HOST", "localhost")
+    db_port = os.getenv("POSTGRES_PORT", "5432")
+    db_name = os.getenv("POSTGRES_DB", "supermercado_db")
+    db_user = os.getenv("POSTGRES_USER", "postgres")
+    db_password = os.getenv("POSTGRES_PASSWORD", "tu_password")
 
-guardar_en_db(df_kpis, "kpis_globales")
-guardar_en_db(df_top_productos, "top_productos")
-guardar_en_db(df_top_clientes, "top_clientes") 
-guardar_en_db(df_categorias_rentables, "categorias_rentables")
-guardar_en_db(df_serie_tiempo, "serie_tiempo")
-guardar_en_db(df_boxplot, "boxplot_data")
+    url_jdbc = f"jdbc:postgresql://{db_host}:{db_port}/{db_name}"
+    propiedades = {
+        "user": db_user,
+        "password": db_password,
+        "driver": "org.postgresql.Driver"
+    }
+    
+    # Guardamos sobreescribiendo para actualizar los KPIs con los datos limpios
+    df.write.jdbc(url=url_jdbc, table=nombre_tabla, mode="overwrite", properties=propiedades)
+    print(f"[Persistencia] Tabla '{nombre_tabla}' guardada con éxito.")
+
+if ENABLE_DB_WRITE:
+    guardar_en_db(df_kpis, "kpis_globales")
+    guardar_en_db(df_top_productos, "top_productos")
+    guardar_en_db(df_top_clientes, "top_clientes")
+    guardar_en_db(df_categorias_rentables, "categorias_rentables")
+    guardar_en_db(df_serie_tiempo, "serie_tiempo")
+    guardar_en_db(df_boxplot, "boxplot_clientes")
+else:
+    print("\n[Persistencia] ENABLE_DB_WRITE=0 -> no se escribieron tablas en PostgreSQL.")
 
 spark.stop()

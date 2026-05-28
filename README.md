@@ -75,7 +75,7 @@ Requisitos:
 - Python
 - Java instalado (Spark lo necesita)
 
-Ejecutar el script de verificación/carga en Windows (PowerShell):
+Ejecutar el script en Windows (PowerShell):
 
 ```powershell
 cd C:\Users\samue\OneDrive\Desktop\supermarket-transaction
@@ -89,8 +89,39 @@ python .\aggregations.py
 
 Notas:
 
-- En Windows es normal ver warnings sobre `winutils.exe` (`HADOOP_HOME`), pero el script debería correr igual.
+- En Windows, el script **no escribe a PostgreSQL por defecto** (`ENABLE_DB_WRITE=0`) para evitar el crash de `winutils.exe`/`HADOOP_HOME` cuando Spark intenta cargar jars externos.
 - El script usa rutas basadas en el proyecto y expande los `*_Tran.csv` con Python para evitar problemas de globbing en Spark/Hadoop en Windows.
+
+## Levantar PostgreSQL (Docker)
+
+Desde la raíz del proyecto:
+
+```powershell
+docker compose up -d
+docker compose ps
+```
+
+Credenciales por defecto (alineadas con el backend):
+
+- DB: `supermercado_db`
+- User: `postgres`
+- Pass: `tu_password`
+- Host/Port desde Windows: `localhost:5432`
+
+Si cambias credenciales, ajusta también [backend/config/database.py](backend/config/database.py) y [docker-compose.yml](docker-compose.yml).
+
+## Backend (FastAPI)
+
+```powershell
+cd .\backend
+pip install -r .\requirements.txt
+python -m uvicorn main:app --reload --port 8000
+```
+
+Endpoints principales:
+
+- `GET http://127.0.0.1:8000/api/analytics/kpis`
+- `GET http://127.0.0.1:8000/api/analytics/top_productos`
 
 ## Pregunta de validación
 
