@@ -1,12 +1,26 @@
 from fastapi import APIRouter
 from config.database import query_all, query_one
+from services.csv_summary import build_summary
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
+
+
+@router.get("/resumen")
+def get_resumen(tienda: str | None = None, fecha_inicio: str | None = None, fecha_fin: str | None = None):
+    return build_summary(store=tienda, start_date=fecha_inicio, end_date=fecha_fin)
 
 @router.get("/kpis")
 
 def get_kpis():
-    return query_one("SELECT * FROM kpis_globales")
+    return query_one(
+        """
+        SELECT
+            k.total_unidades_vendidas,
+            k.total_transacciones,
+            (SELECT COUNT(*) FROM boxplot_clientes) AS clientes_unicos
+        FROM kpis_globales k
+        """
+    )
 
 @router.get("/top_productos")
 def get_top_productos():

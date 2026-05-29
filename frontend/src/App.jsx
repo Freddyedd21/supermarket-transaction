@@ -10,7 +10,10 @@ import {
   Package,
   ReceiptText,
   RefreshCw,
+  RotateCcw,
   ShoppingBasket,
+  SlidersHorizontal,
+  Store,
   Tags,
   Users,
 } from "lucide-react";
@@ -18,6 +21,7 @@ import {
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
 
 const endpoints = {
+  resumen: "/api/analytics/resumen",
   kpis: "/api/analytics/kpis",
   topProductos: "/api/analytics/top_productos",
   topClientes: "/api/analytics/top_clientes",
@@ -33,6 +37,12 @@ const initialData = {
   topClientes: [],
   categorias: [],
   serieTiempo: [],
+};
+
+const initialFilterOptions = {
+  tiendas: [],
+  fecha_min: "2013-01-01",
+  fecha_max: "2013-06-30",
 };
 
 const initialAnalyticalData = {
@@ -427,7 +437,7 @@ function ExecutiveInsight({ serieTiempo, categorias }) {
           </p>
         </div>
         <div>
-          <span>Categoría con mayor volumen relativo</span>
+          <span>Categoría con mayor volumen</span>
           <strong>{topCategory?.nombre_categoria ?? "Sin datos"}</strong>
           <p>
             {topCategory
@@ -452,29 +462,37 @@ export default function App() {
 
 function ExecutiveDashboard() {
   const [data, setData] = useState(initialData);
+  const [filters, setFilters] = useState({
+    tienda: "",
+    fechaInicio: initialFilterOptions.fecha_min,
+    fechaFin: initialFilterOptions.fecha_max,
+  });
+  const [filterOptions, setFilterOptions] = useState(initialFilterOptions);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  async function loadDashboard() {
+  async function loadDashboard(activeFilters = filters) {
     setLoading(true);
     setError("");
 
     try {
-      const [kpis, topProductos, topClientes, categorias, serieTiempo] = await Promise.all([
-        fetchJson(endpoints.kpis),
-        fetchJson(endpoints.topProductos),
-        fetchJson(endpoints.topClientes),
-        fetchJson(endpoints.categorias),
-        fetchJson(endpoints.serieTiempo),
-      ]);
+      const selectedFilters = activeFilters?.fechaInicio === undefined ? filters : activeFilters;
+      const params = new URLSearchParams();
+
+      if (selectedFilters.tienda) params.set("tienda", selectedFilters.tienda);
+      if (selectedFilters.fechaInicio) params.set("fecha_inicio", selectedFilters.fechaInicio);
+      if (selectedFilters.fechaFin) params.set("fecha_fin", selectedFilters.fechaFin);
+
+      const resumen = await fetchJson(`${endpoints.resumen}?${params.toString()}`);
 
       setData({
-        kpis,
-        topProductos,
-        topClientes,
-        categorias: categorias.filter((item) => item.nombre_categoria !== "Producto sin Categoría"),
-        serieTiempo,
+        kpis: resumen.kpis,
+        topProductos: resumen.top_productos,
+        topClientes: resumen.top_clientes,
+        categorias: resumen.categorias_rentables.filter((item) => item.nombre_categoria !== "Producto sin Categoría"),
+        serieTiempo: resumen.serie_tiempo,
       });
+      setFilterOptions(resumen.filtros ?? initialFilterOptions);
     } catch (requestError) {
       setError(requestError.message);
       setData(initialData);
@@ -486,6 +504,24 @@ function ExecutiveDashboard() {
   useEffect(() => {
     loadDashboard();
   }, []);
+
+  function updateFilter(key, value) {
+    setFilters((currentFilters) => ({
+      ...currentFilters,
+      [key]: value,
+    }));
+  }
+
+  function resetFilters() {
+    const defaultFilters = {
+      tienda: "",
+      fechaInicio: filterOptions.fecha_min,
+      fechaFin: filterOptions.fecha_max,
+    };
+
+    setFilters(defaultFilters);
+    loadDashboard(defaultFilters);
+  }
 
   const peakDays = useMemo(() => {
     return [...data.serieTiempo]
@@ -508,7 +544,7 @@ function ExecutiveDashboard() {
             Indicadores principales de volumen, frecuencia de compra, productos destacados y comportamiento diario.
           </p>
         </div>
-        <button className="refresh-button" onClick={loadDashboard} disabled={loading} type="button">
+        <button className="refresh-button" onClick={() => loadDashboard()} disabled={loading} type="button">
           <RefreshCw size={18} aria-hidden="true" />
           {loading ? "Actualizando" : "Actualizar"}
         </button>
@@ -526,6 +562,68 @@ function ExecutiveDashboard() {
         </section>
       ) : null}
 
+      <section className="filters-panel" aria-label="Filtros del resumen ejecutivo">
+        <div className="filters-panel__header">
+          <div>
+            <p className="eyebrow">Consulta filtrada</p>
+            <h2>Transacciones y clientes</h2>
+          </div>
+          <SlidersHorizontal size={22} aria-hidden="true" />
+        </div>
+        <div className="filters-panel__controls">
+          <label className="filter-field">
+            <span>
+              <Store size={16} aria-hidden="true" />
+              Tienda
+            </span>
+            <select value={filters.tienda} onChange={(event) => updateFilter("tienda", event.target.value)}>
+              <option value="">Todas las tiendas</option>
+              {filterOptions.tiendas.map((storeId) => (
+                <option value={storeId} key={storeId}>
+                  Tienda {storeId}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-field">
+            <span>
+              <CalendarDays size={16} aria-hidden="true" />
+              Fecha inicio
+            </span>
+            <input
+              type="date"
+              min={filterOptions.fecha_min}
+              max={filters.fechaFin || filterOptions.fecha_max}
+              value={filters.fechaInicio}
+              onChange={(event) => updateFilter("fechaInicio", event.target.value)}
+            />
+          </label>
+          <label className="filter-field">
+            <span>
+              <CalendarDays size={16} aria-hidden="true" />
+              Fecha fin
+            </span>
+            <input
+              type="date"
+              min={filters.fechaInicio || filterOptions.fecha_min}
+              max={filterOptions.fecha_max}
+              value={filters.fechaFin}
+              onChange={(event) => updateFilter("fechaFin", event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="filters-panel__actions">
+          <button className="refresh-button" onClick={() => loadDashboard()} disabled={loading} type="button">
+            <RefreshCw size={18} aria-hidden="true" />
+            Aplicar filtros
+          </button>
+          <button className="ghost-button" onClick={resetFilters} disabled={loading} type="button">
+            <RotateCcw size={18} aria-hidden="true" />
+            Restablecer
+          </button>
+        </div>
+      </section>
+
       <section className="metric-grid" aria-label="Indicadores globales">
         <MetricCard
           icon={ShoppingBasket}
@@ -542,17 +640,17 @@ function ExecutiveDashboard() {
           tone="blue"
         />
         <MetricCard
-          icon={Package}
-          label="Productos en ranking"
-          value={data.topProductos.length}
-          helper="Top por volumen"
+          icon={Users}
+          label="Clientes unicos"
+          value={data.kpis?.clientes_unicos}
+          helper="Compradores distintos"
           tone="amber"
         />
         <MetricCard
           icon={Tags}
-          label="Categorias analizadas"
+          label="Categorias top"
           value={data.categorias.length}
-          helper="Volumen relativo"
+          helper="Ranking por volumen"
           tone="rose"
         />
       </section>
@@ -602,8 +700,8 @@ function ExecutiveDashboard() {
               compact
             />
             <HorizontalBarList
-              title="Categorias mas rentables"
-              subtitle="Rentabilidad inferida por volumen"
+              title="Top 10 categorias por volumen"
+              subtitle="Unidades vendidas por categoria"
               icon={Tags}
               data={data.categorias}
               labelKey="nombre_categoria"

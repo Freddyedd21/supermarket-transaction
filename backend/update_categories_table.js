@@ -29,12 +29,16 @@ const productCategoryRows = readLines(path.join(dataRoot, "Products", "ProductCa
 
 for (const line of productCategoryRows) {
   const [productId, categoryId] = line.split("|").map((value) => value.trim());
+  const categoryName = categoryNames.get(categoryId);
+  if (!categoryName) continue;
+
   const categories = productCategories.get(productId) ?? new Set();
-  categories.add(categoryNames.get(categoryId) ?? `Categoria ${categoryId}`);
+  categories.add(categoryName);
   productCategories.set(productId, categories);
 }
 
 const counts = new Map();
+const productCounts = new Map();
 const transactionsDir = path.join(dataRoot, "Transactions");
 
 for (const file of fs.readdirSync(transactionsDir).filter((name) => name.endsWith("_Tran.csv"))) {
@@ -42,13 +46,16 @@ for (const file of fs.readdirSync(transactionsDir).filter((name) => name.endsWit
     const products = (line.split("|")[3] ?? "").trim().split(/\s+/).filter(Boolean);
 
     for (const productId of products) {
-      const categories = [...(productCategories.get(productId) ?? new Set(["Producto sin Categoría"]))];
-
-      for (const category of categories) {
-        if (category === "Producto sin Categoría") continue;
-        counts.set(category, (counts.get(category) ?? 0) + 1);
-      }
+      productCounts.set(productId, (productCounts.get(productId) ?? 0) + 1);
     }
+  }
+}
+
+for (const [productId, units] of productCounts) {
+  const categories = productCategories.get(productId) ?? new Set();
+
+  for (const category of categories) {
+    counts.set(category, (counts.get(category) ?? 0) + units);
   }
 }
 

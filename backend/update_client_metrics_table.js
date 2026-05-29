@@ -26,16 +26,6 @@ const categoryNames = new Map(
   }),
 );
 
-const productCategories = new Map();
-const productCategoryRows = readLines(path.join(dataRoot, "Products", "ProductCategory.csv")).slice(1);
-
-for (const line of productCategoryRows) {
-  const [productId, categoryId] = line.split("|").map((value) => value.trim());
-  const categories = productCategories.get(productId) ?? new Set();
-  categories.add(categoryNames.get(categoryId) ?? `Categoria ${categoryId}`);
-  productCategories.set(productId, categories);
-}
-
 const metrics = new Map();
 const transactionsDir = path.join(dataRoot, "Transactions");
 
@@ -65,10 +55,9 @@ for (const file of fs.readdirSync(transactionsDir).filter((name) => name.endsWit
     for (const productId of products) {
       metric.productos.add(productId);
 
-      for (const category of productCategories.get(productId) ?? []) {
-        if (category !== "Producto sin Categoría") {
-          metric.categorias.add(category);
-        }
+      const category = categoryNames.get(productId);
+      if (category) {
+        metric.categorias.add(category);
       }
     }
   }

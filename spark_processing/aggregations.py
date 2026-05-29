@@ -48,8 +48,8 @@ transaction_files = sorted(p.resolve().as_posix() for p in transactions_dir.glob
 if not transaction_files:
     raise FileNotFoundError(f"No se encontraron CSV de transacciones en: {transactions_dir}")
 
-path_productos = (project_root / "data" / "DataSet" / "Products" / "ProductCategory.csv").resolve().as_posix()
 path_categorias = (project_root / "data" / "DataSet" / "Products" / "Categories.csv").resolve().as_posix()
+path_product_category = (project_root / "data" / "DataSet" / "Products" / "ProductCategory.csv").resolve().as_posix()
 
 # 3. Lectura de los DataFrames y limpieza
 df_transacciones = (
@@ -58,25 +58,21 @@ df_transacciones = (
     .withColumn("tx_id", monotonically_increasing_id())
 )
 
-# Leemos la tabla puente de productos. Un producto puede pertenecer a varias
-# categorías; por eso una unidad vendida aporta a cada categoría asociada.
-# Eliminamos duplicados exactos producto-categoría para evitar doble conteo por
-# filas repetidas en ProductCategory.csv.
-df_product_category = (
-    spark.read.csv(path_productos, sep="|", header=True, inferSchema=True)
-    .withColumnRenamed("v.Code_pr", "codigo_producto")
-    .withColumnRenamed("v.code", "codigo_categoria")
-    .withColumn("codigo_producto", trim(col("codigo_producto")).cast("int"))
-    .withColumn("codigo_categoria", trim(col("codigo_categoria")).cast("int"))
-    .dropDuplicates(["codigo_producto", "codigo_categoria"])
-)
-
-# Leemos el catálogo de categorías y limpiamos espacios
+# Leemos el catálogo de categorías y el puente producto-categoría.
+# ProductCategory puede asignar un mismo producto a varias categorías; para el
+# top de categorías se cuenta cada relación producto-categoría encontrada.
 df_categorias = (
     spark.read.csv(path_categorias, sep="|", header=False, inferSchema=True)
     .toDF("id_categoria", "nombre_categoria")
     .withColumn("id_categoria", trim(col("id_categoria")).cast("int"))
     .withColumn("nombre_categoria", trim(col("nombre_categoria")))
+)
+
+df_product_categories = (
+    spark.read.csv(path_product_category, sep="|", header=True, inferSchema=True)
+    .toDF("id_producto_categoria", "id_categoria_producto")
+    .withColumn("id_producto_categoria", trim(col("id_producto_categoria")).cast("int"))
+    .withColumn("id_categoria_producto", trim(col("id_categoria_producto")).cast("int"))
 )
 
 # ==========================================
@@ -93,17 +89,17 @@ df_detalles = (
 # Filtrar nulos resultantes de espacios dobles o vacíos en la lista de productos
 df_detalles = df_detalles.filter(col("id_producto").isNotNull())
 
-# B. Cruce de datos: Doble Join (Transacciones -> Producto -> Categoría)
+# B. Cruce de datos: Transacciones -> ProductoCategoria -> Categoría
 df_completo = (
     df_detalles
     .join(
-        df_product_category,
-        df_detalles.id_producto == df_product_category.codigo_producto,
+        df_product_categories,
+        df_detalles.id_producto == df_product_categories.id_producto_categoria,
         "left"
     )
     .join(
         df_categorias,
-        df_product_category.codigo_categoria == df_categorias.id_categoria,
+        df_product_categories.id_categoria_producto == df_categorias.id_categoria,
         "left"
     )
 )

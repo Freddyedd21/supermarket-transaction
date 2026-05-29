@@ -15,10 +15,10 @@ Archivos principales:
 	- **Nota:** `Productos` es un string con **IDs de producto separados por espacios** (ej: `"20 3 1"`).
 
 - `data/DataSet/Products/ProductCategory.csv`
-	- **Rol:** puente Producto ↔ Categoría
+	- **Rol:** puente producto-categoría para el ranking de categorías
 	- **Formato:** con encabezado, separado por `|`
 	- **Columnas:** `v.Code_pr | v.code`
-	- **Nota:** `v.Code_pr` = ID del producto, `v.code` = ID de la categoría.
+	- **Nota:** puede asignar un mismo producto a varias categorías; para el top de categorías se cuenta cada relación.
 
 - `data/DataSet/Products/Categories.csv`
 	- **Rol:** dimensión de categorías (diccionario)
@@ -47,12 +47,11 @@ El dataset se comporta como un modelo relacional tipo **estrella**:
 	- La tercera columna de transacciones se usa como `cliente_id` porque se repite en el tiempo: hay 131.186 valores distintos frente a 1.108.987 transacciones.
 	- Si el origen del dataset la documenta como ticket, debe explicarse como un identificador recurrente/proxy para el análisis de frecuencia.
 
-- **Calidad de la relación producto-categoría:**
-	- `ProductCategory.csv` no es una dimensión uno-a-uno: contiene productos asociados a más de una categoría.
-	- También contiene pares producto-categoría duplicados exactos.
-	- El ETL elimina duplicados exactos producto-categoría, pero conserva la relación muchos-a-muchos: si un producto pertenece a varias categorías, su unidad vendida aporta a cada categoría asociada.
-	- Por esta razón, el ranking de categorías representa **volumen asociado por categoría**, no ventas exclusivas; el total por categorías puede superar el total real de unidades vendidas.
-	- Aproximadamente la mitad de las unidades vendidas no encuentran categoría en `ProductCategory.csv`, por lo que los análisis por categoría se interpretan como volumen relativo sobre productos categorizados, no como cobertura total del supermercado.
+- **Lectura correcta de categorías:**
+	- El análisis de top 10 categorías cruza cada código de `Productos` con `ProductCategory.csv` y luego con `Categories.csv`.
+	- Si un producto pertenece a varias categorías, suma una unidad en cada categoría relacionada.
+	- Este cruce reproduce el top esperado donde `CARNES PROCESADAS AL VACIO` y `VERDURAS RAIZ,TUBERCULO Y BULBOS` aparecen con `1.811.523` unidades.
+	- Los códigos vendidos sin relación en `ProductCategory.csv` se excluyen del ranking de categorías.
 
 - **Importante para visualizaciones:**
 	- Si no se incorpora `Categories.csv`, los análisis por categoría mostrarán solo IDs (`1, 2, 3...`) en lugar de nombres (ej: `YOGURT`, `PANES-TOSTADAS`).
@@ -65,15 +64,12 @@ Flujo recomendado de transformaciones y cruces (joins):
 [Tickets con String de Productos]
 	|
 	v  (Split & Explode)
-[Fila por cada Producto Individual] --- (Join por producto_id) ---> [ProductCategory.csv]
-	|
-	v  (Join por categoria_id)
-[Categories.csv]
+[Fila por cada Código Vendido] ---> [ProductCategory.csv] ---> [Categories.csv]
 ```
 
 Salida esperada (tabla unificada) para facilitar KPIs y gráficos:
 
-- `fecha, tienda_id, ticket_id, producto_id, categoria_id, nombre_categoria`
+- `fecha, tienda_id, cliente_id, id_producto, nombre_categoria`
 
 ## Probar localmente (Spark)
 
