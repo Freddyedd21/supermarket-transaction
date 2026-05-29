@@ -11,7 +11,7 @@ Archivos principales:
 - `data/DataSet/Transactions/*_Tran.csv`
 	- **Rol:** Transacciones (tickets)
 	- **Formato:** sin encabezado, separado por `|`
-	- **Columnas:** `Fecha | Tienda_ID | Ticket_ID | Productos`
+	- **Columnas:** `Fecha | Tienda_ID | Cliente_ID o identificador recurrente | Productos`
 	- **Nota:** `Productos` es un string con **IDs de producto separados por espacios** (ej: `"20 3 1"`).
 
 - `data/DataSet/Products/ProductCategory.csv`
@@ -43,9 +43,16 @@ El dataset se comporta como un modelo relacional tipo **estrella**:
 	- Significa que el 1 de enero de 2013, en la tienda 102, el ticket 530 incluye los productos `20`, `3` y `1`.
 	- Para poder contar y agregar correctamente, la estrategia es: **split** de `Productos` y luego **explode** para crear una fila por producto.
 
-- **El “eslabón perdido” de clientes:**
-	- El taller menciona “ID de cliente”, pero en las transacciones **no aparece** una columna de cliente.
-	- Para la entrega analítica, se puede interpretar cada **Ticket_ID como un evento de compra único** (o proxy de cliente en ese instante).
+- **Cliente / identificador recurrente:**
+	- La tercera columna de transacciones se usa como `cliente_id` porque se repite en el tiempo: hay 131.186 valores distintos frente a 1.108.987 transacciones.
+	- Si el origen del dataset la documenta como ticket, debe explicarse como un identificador recurrente/proxy para el análisis de frecuencia.
+
+- **Calidad de la relación producto-categoría:**
+	- `ProductCategory.csv` no es una dimensión uno-a-uno: contiene productos asociados a más de una categoría.
+	- También contiene pares producto-categoría duplicados exactos.
+	- El ETL elimina duplicados exactos producto-categoría, pero conserva la relación muchos-a-muchos: si un producto pertenece a varias categorías, su unidad vendida aporta a cada categoría asociada.
+	- Por esta razón, el ranking de categorías representa **volumen asociado por categoría**, no ventas exclusivas; el total por categorías puede superar el total real de unidades vendidas.
+	- Aproximadamente la mitad de las unidades vendidas no encuentran categoría en `ProductCategory.csv`, por lo que los análisis por categoría se interpretan como volumen relativo sobre productos categorizados, no como cobertura total del supermercado.
 
 - **Importante para visualizaciones:**
 	- Si no se incorpora `Categories.csv`, los análisis por categoría mostrarán solo IDs (`1, 2, 3...`) en lugar de nombres (ej: `YOGURT`, `PANES-TOSTADAS`).
@@ -122,6 +129,28 @@ Endpoints principales:
 
 - `GET http://127.0.0.1:8000/api/analytics/kpis`
 - `GET http://127.0.0.1:8000/api/analytics/top_productos`
+- `GET http://127.0.0.1:8000/api/analytics/serie_tiempo`
+- `GET http://127.0.0.1:8000/api/analytics/boxplot_clientes`
+- `GET http://127.0.0.1:8000/api/analytics/correlacion_clientes`
+
+## Frontend
+
+```powershell
+cd .\frontend
+npm install
+npm run dev
+```
+
+Vistas principales:
+
+- `http://localhost:5173/` - Resumen Ejecutivo.
+- `http://localhost:5173/visualizaciones` - Visualizaciones Analíticas: serie de tiempo, boxplot y heatmap de correlación.
+
+Si sólo necesitas regenerar las métricas del heatmap sin correr todo Spark:
+
+```powershell
+node .\backend\update_client_metrics_table.js
+```
 
 ## Pregunta de validación
 

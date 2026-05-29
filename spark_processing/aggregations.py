@@ -26,8 +26,7 @@ except ImportError as exc:
     raise ImportError("Falta psycopg2-binary. Instálalo con: pip install psycopg2-binary") from exc
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, count_distinct, explode, split, monotonically_increasing_id, row_number, trim
-from pyspark.sql.window import Window
+from pyspark.sql.functions import col, count, count_distinct, explode, split, monotonically_increasing_id, trim
 
 # 1. Crear la sesión de Spark
 ENABLE_DB_WRITE = os.getenv("ENABLE_DB_WRITE", "1").strip().lower() in {"1", "true", "yes"}
@@ -59,31 +58,17 @@ df_transacciones = (
     .withColumn("tx_id", monotonically_increasing_id())
 )
 
-# Leemos la tabla puente y dejamos una sola categoría principal por producto.
-# El archivo trae productos asociados a varias categorías; si no se resuelve,
-# el join duplica ventas por categoría. Usamos la primera categoría registrada
-# en ProductCategory.csv como categoría principal.
-df_product_category_raw = (
-    spark.sparkContext.textFile(path_productos)
-    .zipWithIndex()
-    .filter(lambda row: row[1] > 0)
-    .map(lambda row: (row[0], row[1]))
-    .toDF(["linea", "orden_origen"])
-)
-
-ventana_categoria_principal = Window.partitionBy("codigo_producto").orderBy(col("orden_origen").asc())
-
+# Leemos la tabla puente de productos. Un producto puede pertenecer a varias
+# categorías; por eso una unidad vendida aporta a cada categoría asociada.
+# Eliminamos duplicados exactos producto-categoría para evitar doble conteo por
+# filas repetidas en ProductCategory.csv.
 df_product_category = (
-    df_product_category_raw
-    .select(
-        trim(split(col("linea"), r"\|").getItem(0)).cast("int").alias("codigo_producto"),
-        trim(split(col("linea"), r"\|").getItem(1)).cast("int").alias("codigo_categoria"),
-        col("orden_origen"),
-    )
-    .filter(col("codigo_producto").isNotNull() & col("codigo_categoria").isNotNull())
-    .withColumn("categoria_rank", row_number().over(ventana_categoria_principal))
-    .filter(col("categoria_rank") == 1)
-    .drop("orden_origen", "categoria_rank")
+    spark.read.csv(path_productos, sep="|", header=True, inferSchema=True)
+    .withColumnRenamed("v.Code_pr", "codigo_producto")
+    .withColumnRenamed("v.code", "codigo_categoria")
+    .withColumn("codigo_producto", trim(col("codigo_producto")).cast("int"))
+    .withColumn("codigo_categoria", trim(col("codigo_categoria")).cast("int"))
+    .dropDuplicates(["codigo_producto", "codigo_categoria"])
 )
 
 # Leemos el catálogo de categorías y limpiamos espacios
@@ -185,6 +170,33 @@ df_boxplot = (
     .agg(count("*").alias("cantidad_total_cliente"))
 )
 
+# 3. Métricas por cliente para heatmap de correlación
+df_metricas_clientes_base = (
+    df_detalles.groupBy("cliente_id")
+    .agg(
+        count_distinct("tx_id").alias("frecuencia_transacciones"),
+        count("*").alias("volumen_total"),
+        count_distinct("id_producto").alias("productos_distintos"),
+    )
+    .withColumn(
+        "cantidad_promedio",
+        col("volumen_total") / col("frecuencia_transacciones"),
+    )
+)
+
+df_diversidad_categorias = (
+    df_completo
+    .filter(col("nombre_categoria") != "Producto sin Categoría")
+    .groupBy("cliente_id")
+    .agg(count_distinct("nombre_categoria").alias("diversidad_categorias"))
+)
+
+df_metricas_clientes = (
+    df_metricas_clientes_base
+    .join(df_diversidad_categorias, "cliente_id", "left")
+    .na.fill({"diversidad_categorias": 0})
+)
+
 # ==========================================
 # PERSISTENCIA / AUDITORÍA EN CONSOLA
 # ==========================================
@@ -274,12 +286,14 @@ def guardar_en_db_con_docker(tablas):
         "DROP TABLE IF EXISTS categorias_rentables;",
         "DROP TABLE IF EXISTS serie_tiempo;",
         "DROP TABLE IF EXISTS boxplot_clientes;",
+        "DROP TABLE IF EXISTS metricas_clientes;",
         "CREATE TABLE kpis_globales (total_unidades_vendidas BIGINT, total_transacciones BIGINT);",
         "CREATE TABLE top_productos (id_producto INTEGER, unidades_vendidas BIGINT);",
         "CREATE TABLE top_clientes (cliente_id INTEGER, frecuencia_transacciones BIGINT, volumen_compra BIGINT);",
         "CREATE TABLE categorias_rentables (nombre_categoria TEXT, unidades_vendidas BIGINT);",
         "CREATE TABLE serie_tiempo (fecha DATE, unidades_vendidas BIGINT, transacciones_diarias BIGINT);",
         "CREATE TABLE boxplot_clientes (cliente_id INTEGER, cantidad_total_cliente BIGINT);",
+        "CREATE TABLE metricas_clientes (cliente_id INTEGER, frecuencia_transacciones BIGINT, volumen_total BIGINT, productos_distintos BIGINT, cantidad_promedio DOUBLE PRECISION, diversidad_categorias BIGINT);",
     ]
 
     for nombre_tabla, columnas, rows in tablas:
@@ -350,6 +364,28 @@ def guardar_en_db():
             ["cliente_id", "cantidad_total_cliente"],
             df_a_rows(df_boxplot, ["cliente_id", "cantidad_total_cliente"]),
         ),
+        (
+            "metricas_clientes",
+            [
+                "cliente_id",
+                "frecuencia_transacciones",
+                "volumen_total",
+                "productos_distintos",
+                "cantidad_promedio",
+                "diversidad_categorias",
+            ],
+            df_a_rows(
+                df_metricas_clientes,
+                [
+                    "cliente_id",
+                    "frecuencia_transacciones",
+                    "volumen_total",
+                    "productos_distintos",
+                    "cantidad_promedio",
+                    "diversidad_categorias",
+                ],
+            ),
+        ),
     ]
 
     try:
@@ -367,6 +403,11 @@ def guardar_en_db():
             recrear_tabla(cursor, "categorias_rentables", "nombre_categoria TEXT, unidades_vendidas BIGINT")
             recrear_tabla(cursor, "serie_tiempo", "fecha DATE, unidades_vendidas BIGINT, transacciones_diarias BIGINT")
             recrear_tabla(cursor, "boxplot_clientes", "cliente_id INTEGER, cantidad_total_cliente BIGINT")
+            recrear_tabla(
+                cursor,
+                "metricas_clientes",
+                "cliente_id INTEGER, frecuencia_transacciones BIGINT, volumen_total BIGINT, productos_distintos BIGINT, cantidad_promedio DOUBLE PRECISION, diversidad_categorias BIGINT",
+            )
 
             guardar_rows(
                 cursor,
@@ -403,6 +444,19 @@ def guardar_en_db():
                 "boxplot_clientes",
                 ["cliente_id", "cantidad_total_cliente"],
                 tablas[5][2],
+            )
+            guardar_rows(
+                cursor,
+                "metricas_clientes",
+                [
+                    "cliente_id",
+                    "frecuencia_transacciones",
+                    "volumen_total",
+                    "productos_distintos",
+                    "cantidad_promedio",
+                    "diversidad_categorias",
+                ],
+                tablas[6][2],
             )
 
     print("[Persistencia] Proceso terminado correctamente.")
