@@ -26,7 +26,8 @@ except ImportError as exc:
     raise ImportError("Falta psycopg2-binary. Instálalo con: pip install psycopg2-binary") from exc
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, count_distinct, explode, split, monotonically_increasing_id, trim
+from pyspark.sql.functions import col, count, count_distinct, explode, split, monotonically_increasing_id, row_number, trim
+from pyspark.sql.window import Window
 
 # 1. Crear la sesión de Spark
 ENABLE_DB_WRITE = os.getenv("ENABLE_DB_WRITE", "1").strip().lower() in {"1", "true", "yes"}
@@ -58,13 +59,31 @@ df_transacciones = (
     .withColumn("tx_id", monotonically_increasing_id())
 )
 
-# Leemos la tabla puente de productos y aseguramos que no haya espacios en los IDs
+# Leemos la tabla puente y dejamos una sola categoría principal por producto.
+# El archivo trae productos asociados a varias categorías; si no se resuelve,
+# el join duplica ventas por categoría. Usamos la primera categoría registrada
+# en ProductCategory.csv como categoría principal.
+df_product_category_raw = (
+    spark.sparkContext.textFile(path_productos)
+    .zipWithIndex()
+    .filter(lambda row: row[1] > 0)
+    .map(lambda row: (row[0], row[1]))
+    .toDF(["linea", "orden_origen"])
+)
+
+ventana_categoria_principal = Window.partitionBy("codigo_producto").orderBy(col("orden_origen").asc())
+
 df_product_category = (
-    spark.read.csv(path_productos, sep="|", header=True, inferSchema=True)
-    .withColumnRenamed("v.Code_pr", "codigo_producto")
-    .withColumnRenamed("v.code", "codigo_categoria")
-    .withColumn("codigo_producto", trim(col("codigo_producto")).cast("int"))
-    .withColumn("codigo_categoria", trim(col("codigo_categoria")).cast("int"))
+    df_product_category_raw
+    .select(
+        trim(split(col("linea"), r"\|").getItem(0)).cast("int").alias("codigo_producto"),
+        trim(split(col("linea"), r"\|").getItem(1)).cast("int").alias("codigo_categoria"),
+        col("orden_origen"),
+    )
+    .filter(col("codigo_producto").isNotNull() & col("codigo_categoria").isNotNull())
+    .withColumn("categoria_rank", row_number().over(ventana_categoria_principal))
+    .filter(col("categoria_rank") == 1)
+    .drop("orden_origen", "categoria_rank")
 )
 
 # Leemos el catálogo de categorías y limpiamos espacios

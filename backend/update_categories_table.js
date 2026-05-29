@@ -29,8 +29,8 @@ const productCategoryRows = readLines(path.join(dataRoot, "Products", "ProductCa
 
 for (const line of productCategoryRows) {
   const [productId, categoryId] = line.split("|").map((value) => value.trim());
-  const categories = productCategories.get(productId) ?? [];
-  categories.push(categoryNames.get(categoryId) ?? `Categoria ${categoryId}`);
+  const categories = productCategories.get(productId) ?? new Set();
+  categories.add(categoryNames.get(categoryId) ?? `Categoria ${categoryId}`);
   productCategories.set(productId, categories);
 }
 
@@ -42,7 +42,7 @@ for (const file of fs.readdirSync(transactionsDir).filter((name) => name.endsWit
     const products = (line.split("|")[3] ?? "").trim().split(/\s+/).filter(Boolean);
 
     for (const productId of products) {
-      const categories = productCategories.get(productId) ?? ["Producto sin Categoría"];
+      const categories = [...(productCategories.get(productId) ?? new Set(["Producto sin Categoría"]))];
 
       for (const category of categories) {
         if (category === "Producto sin Categoría") continue;
