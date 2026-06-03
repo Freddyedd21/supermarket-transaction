@@ -1,4 +1,6 @@
-from collections import Counter, defaultdict
+from collections import Counter
+from datetime import date as date_type
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -7,6 +9,16 @@ DATA_ROOT = PROJECT_ROOT / "data" / "DataSet"
 TRANSACTIONS_DIR = DATA_ROOT / "Transactions"
 CATEGORIES_FILE = DATA_ROOT / "Products" / "Categories.csv"
 PRODUCT_CATEGORY_FILE = DATA_ROOT / "Products" / "ProductCategory.csv"
+
+WEEKDAYS = [
+    "Lunes",
+    "Martes",
+    "Miercoles",
+    "Jueves",
+    "Viernes",
+    "Sabado",
+    "Domingo",
+]
 
 
 def _read_categories():
@@ -24,8 +36,8 @@ def _read_categories():
     return categories
 
 
-def _read_product_categories(categories):
-    product_categories = defaultdict(set)
+def _read_first_product_categories(categories):
+    product_categories = {}
 
     with PRODUCT_CATEGORY_FILE.open("r", encoding="utf-8") as file:
         next(file, None)
@@ -37,8 +49,8 @@ def _read_product_categories(categories):
 
             product_id, category_id = [part.strip() for part in line.split("|", 1)]
             category_name = categories.get(category_id)
-            if category_name:
-                product_categories[product_id].add(category_name)
+            if category_name and product_id not in product_categories:
+                product_categories[product_id] = category_name
 
     return product_categories
 
@@ -54,9 +66,17 @@ def _top_counter(counter, key_name, value_name, limit=10):
     ]
 
 
+def _weekday_index(value):
+    try:
+        return date_type.fromisoformat(value).weekday()
+    except ValueError:
+        return None
+
+
+@lru_cache(maxsize=32)
 def build_summary(store=None, start_date=None, end_date=None):
     categories = _read_categories()
-    product_categories = _read_product_categories(categories)
+    product_categories = _read_first_product_categories(categories)
     transaction_files = _transaction_files()
 
     product_units = Counter()
@@ -65,6 +85,8 @@ def build_summary(store=None, start_date=None, end_date=None):
     daily_transactions = Counter()
     client_transactions = Counter()
     client_units = Counter()
+    weekday_transactions = Counter()
+    weekday_units = Counter()
     stores = set()
     clients = set()
 
@@ -93,15 +115,6 @@ def build_summary(store=None, start_date=None, end_date=None):
                 if not products:
                     continue
 
-                total_units += len(products)
-                client_transactions[client_id] += 1
-                client_units[client_id] += len(products)
-                daily_transactions[date] += 1
-                daily_units[date] += len(products)
-
-                for product_id in products:
-                    product_units[product_id] += 1
-
                 matches_filters = True
                 if store and store_id != store:
                     matches_filters = False
@@ -111,12 +124,24 @@ def build_summary(store=None, start_date=None, end_date=None):
                     matches_filters = False
 
                 if matches_filters:
+                    total_units += len(products)
                     filtered_transactions += 1
                     clients.add(client_id)
+                    client_transactions[client_id] += 1
+                    client_units[client_id] += len(products)
+                    daily_transactions[date] += 1
+                    daily_units[date] += len(products)
 
-    for product_id, units in product_units.items():
-        for category_name in product_categories.get(product_id, ()):
-            category_units[category_name] += units
+                    weekday = _weekday_index(date)
+                    if weekday is not None:
+                        weekday_transactions[weekday] += 1
+                        weekday_units[weekday] += len(products)
+
+                    for product_id in products:
+                        product_units[product_id] += 1
+                        category_name = product_categories.get(product_id)
+                        if category_name:
+                            category_units[category_name] += 1
 
     top_clients = [
         {
@@ -136,6 +161,16 @@ def build_summary(store=None, start_date=None, end_date=None):
         for date in sorted(daily_units)
     ]
 
+    dias_semana = [
+        {
+            "dia": weekday,
+            "orden": index,
+            "transacciones": weekday_transactions[index],
+            "unidades_vendidas": weekday_units[index],
+        }
+        for index, weekday in enumerate(WEEKDAYS)
+    ]
+
     return {
         "kpis": {
             "total_unidades_vendidas": total_units,
@@ -146,6 +181,7 @@ def build_summary(store=None, start_date=None, end_date=None):
         "top_clientes": top_clients,
         "categorias_rentables": _top_counter(category_units, "nombre_categoria", "unidades_vendidas"),
         "serie_tiempo": serie_tiempo,
+        "dias_semana": dias_semana,
         "filtros": {
             "tiendas": sorted(stores, key=lambda value: int(value) if value.isdigit() else value),
             "fecha_min": min_date,

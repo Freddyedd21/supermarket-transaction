@@ -4,15 +4,19 @@ import {
   AlertCircle,
   ArrowRight,
   BarChart3,
+  Brain,
   CalendarDays,
   ChartNoAxesCombined,
+  GitBranch,
   Grid3X3,
   Package,
   ReceiptText,
   RefreshCw,
   RotateCcw,
+  Search,
   ShoppingBasket,
   SlidersHorizontal,
+  Sparkles,
   Store,
   Tags,
   Users,
@@ -29,6 +33,10 @@ const endpoints = {
   serieTiempo: "/api/analytics/serie_tiempo",
   boxplotClientes: "/api/analytics/boxplot_clientes",
   correlacionClientes: "/api/analytics/correlacion_clientes",
+  avanzado: "/api/analytics/avanzado",
+  refrescarAvanzado: "/api/analytics/avanzado/refrescar",
+  recomendarCliente: "/api/analytics/recomendaciones/cliente",
+  recomendarProducto: "/api/analytics/recomendaciones/producto",
 };
 
 const initialData = {
@@ -37,6 +45,7 @@ const initialData = {
   topClientes: [],
   categorias: [],
   serieTiempo: [],
+  diasSemana: [],
 };
 
 const initialFilterOptions = {
@@ -49,6 +58,31 @@ const initialAnalyticalData = {
   serieTiempo: [],
   boxplotClientes: [],
   correlacionClientes: [],
+};
+
+const initialAdvancedData = {
+  segmentacion: {
+    total_clientes: 0,
+    variables: [],
+    clusters: [],
+    puntos: [],
+    interpretacion_general: "",
+  },
+  recomendador: {
+    metodo: "",
+    clientes_sugeridos: [],
+    productos_sugeridos: [],
+  },
+  ejemplos: {
+    cliente_id: "",
+    producto_id: "",
+    recomendaciones_cliente: [],
+    recomendaciones_producto: [],
+  },
+  regeneracion: {
+    descripcion: "",
+    pasos: [],
+  },
 };
 
 function formatNumber(value) {
@@ -76,6 +110,14 @@ function normalizeDate(value) {
 
 async function fetchJson(path) {
   const response = await fetch(`${API_BASE_URL}${path}`);
+  if (!response.ok) {
+    throw new Error(`Error ${response.status} al consultar ${path}`);
+  }
+  return response.json();
+}
+
+async function postJson(path) {
+  const response = await fetch(`${API_BASE_URL}${path}`, { method: "POST" });
   if (!response.ok) {
     throw new Error(`Error ${response.status} al consultar ${path}`);
   }
@@ -110,6 +152,12 @@ function AppNavigation() {
         href="/visualizaciones"
       >
         Visualizaciones Analiticas
+      </a>
+      <a
+        className={path.startsWith("/avanzado") ? "app-nav__link app-nav__link--active" : "app-nav__link"}
+        href="/avanzado"
+      >
+        Analisis Avanzado
       </a>
     </nav>
   );
@@ -158,6 +206,59 @@ function HorizontalBarList({
               </div>
             );
           })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function WeekdayHeatmap({ data }) {
+  const chartData = useMemo(
+    () =>
+      data
+        .map((item) => ({
+          dia: item.dia,
+          orden: Number(item.orden ?? 0),
+          transacciones: Number(item.transacciones ?? 0),
+          unidades: Number(item.unidades_vendidas ?? 0),
+        }))
+        .sort((a, b) => a.orden - b.orden),
+    [data],
+  );
+
+  const maxTransactions = Math.max(...chartData.map((item) => item.transacciones), 1);
+
+  function intensity(value) {
+    return 0.12 + (value / maxTransactions) * 0.78;
+  }
+
+  return (
+    <section className="panel">
+      <div className="panel__header">
+        <div>
+          <p className="eyebrow">Transacciones por dia</p>
+          <h2>Dias pico de compra</h2>
+        </div>
+        <CalendarDays className="panel__icon" size={22} aria-hidden="true" />
+      </div>
+
+      {chartData.length === 0 ? (
+        <div className="empty-state">No hay datos por dia de la semana disponibles.</div>
+      ) : (
+        <div className="weekday-heatmap" role="list" aria-label="Mapa de calor de transacciones por dia de semana">
+          {chartData.map((item) => (
+            <div
+              className="weekday-heatmap__cell"
+              key={item.dia}
+              role="listitem"
+              style={{ "--heat": intensity(item.transacciones) }}
+              title={`${item.dia}: ${formatNumber(item.transacciones)} transacciones`}
+            >
+              <span>{item.dia}</span>
+              <strong>{formatNumber(item.transacciones)}</strong>
+              <small>{formatNumber(item.unidades)} unidades</small>
+            </div>
+          ))}
         </div>
       )}
     </section>
@@ -407,12 +508,12 @@ function HeatmapCorrelation({ data }) {
   );
 }
 
-function ExecutiveInsight({ serieTiempo, categorias }) {
+function ExecutiveInsight({ diasSemana, categorias }) {
   const peakDay = useMemo(() => {
-    return [...serieTiempo].sort(
-      (a, b) => Number(b.transacciones_diarias ?? 0) - Number(a.transacciones_diarias ?? 0),
+    return [...diasSemana].sort(
+      (a, b) => Number(b.transacciones ?? 0) - Number(a.transacciones ?? 0),
     )[0];
-  }, [serieTiempo]);
+  }, [diasSemana]);
 
   const topCategory = categorias[0];
 
@@ -428,12 +529,12 @@ function ExecutiveInsight({ serieTiempo, categorias }) {
 
       <div className="insight-list">
         <div>
-          <span>Día pico de compra</span>
-          <strong>{peakDay ? formatDate(normalizeDate(peakDay.fecha)) : "Sin datos"}</strong>
+          <span>Dia de semana pico</span>
+          <strong>{peakDay?.dia ?? "Sin datos"}</strong>
           <p>
             {peakDay
-              ? `${formatNumber(peakDay.transacciones_diarias)} transacciones registradas.`
-              : "La serie temporal no tiene registros para calcular el pico."}
+              ? `${formatNumber(peakDay.transacciones)} transacciones registradas.`
+              : "No hay registros para calcular el pico semanal."}
           </p>
         </div>
         <div>
@@ -450,8 +551,271 @@ function ExecutiveInsight({ serieTiempo, categorias }) {
   );
 }
 
+const clusterColors = ["#2a9d8f", "#3267a8", "#e9a03b", "#b34a38"];
+
+function formatDecimal(value, digits = 2) {
+  return Number(value ?? 0).toLocaleString("es-CO", {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: 0,
+  });
+}
+
+function ClusterScatter({ points }) {
+  const chart = useMemo(() => {
+    const cleanPoints = points
+      .map((point) => ({
+        ...point,
+        x: Number(point.x ?? 0),
+        y: Number(point.y ?? 0),
+        cluster: Number(point.cluster ?? 0),
+      }))
+      .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+
+    if (cleanPoints.length === 0) {
+      return { points: [], minX: 0, maxX: 1, minY: 0, maxY: 1 };
+    }
+
+    return {
+      points: cleanPoints,
+      minX: Math.min(...cleanPoints.map((point) => point.x)),
+      maxX: Math.max(...cleanPoints.map((point) => point.x)),
+      minY: Math.min(...cleanPoints.map((point) => point.y)),
+      maxY: Math.max(...cleanPoints.map((point) => point.y)),
+    };
+  }, [points]);
+
+  const width = 720;
+  const height = 320;
+  const padding = 42;
+  const xRange = Math.max(chart.maxX - chart.minX, 0.001);
+  const yRange = Math.max(chart.maxY - chart.minY, 0.001);
+
+  return (
+    <section className="panel panel--wide">
+      <div className="panel__header">
+        <div>
+          <p className="eyebrow">K-Means</p>
+          <h2>Visualizacion del clustering</h2>
+        </div>
+        <Brain className="panel__icon" size={22} aria-hidden="true" />
+      </div>
+
+      {chart.points.length === 0 ? (
+        <div className="empty-state">No hay puntos de segmentacion disponibles.</div>
+      ) : (
+        <>
+          <div className="scatter-chart">
+            <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Clusters de clientes">
+              <line x1={padding} x2={width - padding} y1={height - padding} y2={height - padding} className="chart-axis" />
+              <line x1={padding} x2={padding} y1={padding} y2={height - padding} className="chart-axis" />
+              {chart.points.map((point, index) => {
+                const x = padding + ((point.x - chart.minX) / xRange) * (width - padding * 2);
+                const y = height - padding - ((point.y - chart.minY) / yRange) * (height - padding * 2);
+                return (
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r="5"
+                    fill={clusterColors[point.cluster % clusterColors.length]}
+                    opacity="0.74"
+                    key={`${point.cliente_id}-${index}`}
+                  />
+                );
+              })}
+              <text x={width / 2} y={height - 8} className="chart-label">
+                Volumen total de compra
+              </text>
+              <text x="14" y={height / 2} className="chart-label chart-label--vertical">
+                Productos distintos
+              </text>
+            </svg>
+          </div>
+          <div className="cluster-legend">
+            {[0, 1, 2, 3].map((cluster) => (
+              <span key={cluster}>
+                <i style={{ backgroundColor: clusterColors[cluster] }} />
+                Grupo {cluster + 1}
+              </span>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function ClusterCards({ clusters }) {
+  return (
+    <section className="cluster-grid" aria-label="Interpretacion de segmentos">
+      {clusters.map((cluster) => (
+        <article className="cluster-card" key={cluster.cluster}>
+          <div className="cluster-card__header">
+            <span style={{ backgroundColor: clusterColors[cluster.cluster % clusterColors.length] }}>
+              Grupo {Number(cluster.cluster) + 1}
+            </span>
+            <strong>{cluster.nombre}</strong>
+          </div>
+          <p>{cluster.interpretacion}</p>
+          <div className="cluster-card__stats">
+            <span>{formatNumber(cluster.clientes)} clientes</span>
+            <span>{formatDecimal(cluster.porcentaje)}%</span>
+            <span>{formatDecimal(cluster.promedios?.frecuencia_transacciones)} compras prom.</span>
+            <span>{formatDecimal(cluster.promedios?.volumen_total)} unidades prom.</span>
+          </div>
+        </article>
+      ))}
+    </section>
+  );
+}
+
+function RecommendationList({ title, data, scoreKey }) {
+  return (
+    <section className="recommendation-list">
+      <h3>{title}</h3>
+      {data.length === 0 ? (
+        <div className="empty-state empty-state--small">No hay recomendaciones disponibles.</div>
+      ) : (
+        data.map((item) => (
+          <article className="recommendation-item" key={`${title}-${item.id_producto}`}>
+            <div>
+              <span>Producto {item.id_producto}</span>
+              <p>{item.interpretacion}</p>
+            </div>
+            <strong>
+              {scoreKey === "lift"
+                ? `Lift ${formatDecimal(item.lift)}`
+                : `Score ${formatDecimal(item.score ?? item.confianza, 3)}`}
+            </strong>
+          </article>
+        ))
+      )}
+    </section>
+  );
+}
+
+function RecommendationPanel({ data, onClientSearch, onProductSearch, loading }) {
+  const [clientId, setClientId] = useState(data.ejemplos.cliente_id ?? "");
+  const [productId, setProductId] = useState(data.ejemplos.producto_id ?? "");
+  const [clientRecommendations, setClientRecommendations] = useState(data.ejemplos.recomendaciones_cliente ?? []);
+  const [productRecommendations, setProductRecommendations] = useState(data.ejemplos.recomendaciones_producto ?? []);
+
+  useEffect(() => {
+    setClientId(data.ejemplos.cliente_id ?? "");
+    setProductId(data.ejemplos.producto_id ?? "");
+    setClientRecommendations(data.ejemplos.recomendaciones_cliente ?? []);
+    setProductRecommendations(data.ejemplos.recomendaciones_producto ?? []);
+  }, [data]);
+
+  async function searchClient(event) {
+    event.preventDefault();
+    const recommendations = await onClientSearch(clientId);
+    setClientRecommendations(recommendations);
+  }
+
+  async function searchProduct(event) {
+    event.preventDefault();
+    const recommendations = await onProductSearch(productId);
+    setProductRecommendations(recommendations);
+  }
+
+  return (
+    <section className="panel panel--wide">
+      <div className="panel__header">
+        <div>
+          <p className="eyebrow">Reglas de asociacion</p>
+          <h2>Recomendador de productos</h2>
+        </div>
+        <Sparkles className="panel__icon" size={22} aria-hidden="true" />
+      </div>
+
+      <div className="recommender-grid">
+        <form className="lookup-form" onSubmit={searchClient}>
+          <label>
+            <span>Cliente</span>
+            <input
+              list="clientes-sugeridos"
+              value={clientId}
+              onChange={(event) => setClientId(event.target.value)}
+              placeholder="Ej: 336296"
+            />
+          </label>
+          <button className="refresh-button" type="submit" disabled={loading || !clientId}>
+            <Search size={18} aria-hidden="true" />
+            Recomendar
+          </button>
+          <datalist id="clientes-sugeridos">
+            {data.recomendador.clientes_sugeridos.map((client) => (
+              <option value={client.cliente_id} key={client.cliente_id} />
+            ))}
+          </datalist>
+        </form>
+
+        <form className="lookup-form" onSubmit={searchProduct}>
+          <label>
+            <span>Producto</span>
+            <input
+              list="productos-sugeridos"
+              value={productId}
+              onChange={(event) => setProductId(event.target.value)}
+              placeholder="Ej: 3"
+            />
+          </label>
+          <button className="refresh-button" type="submit" disabled={loading || !productId}>
+            <Search size={18} aria-hidden="true" />
+            Buscar similares
+          </button>
+          <datalist id="productos-sugeridos">
+            {data.recomendador.productos_sugeridos.map((product) => (
+              <option value={product.id_producto} key={product.id_producto} />
+            ))}
+          </datalist>
+        </form>
+      </div>
+
+      <div className="dashboard-grid">
+        <RecommendationList title="Sugerencias para el cliente" data={clientRecommendations} scoreKey="score" />
+        <RecommendationList title="Productos comprados juntos" data={productRecommendations} scoreKey="lift" />
+      </div>
+    </section>
+  );
+}
+
+function RegenerationPanel({ data, onRefresh, loading }) {
+  return (
+    <section className="panel panel--insight">
+      <div className="panel__header">
+        <div>
+          <p className="eyebrow">Nuevos datos</p>
+          <h2>Generacion de resultados</h2>
+        </div>
+        <GitBranch className="panel__icon" size={22} aria-hidden="true" />
+      </div>
+      <div className="insight-list">
+        <div>
+          <span>Flujo implementado</span>
+          <strong>CSV, Spark y cache del modelo</strong>
+          <p>{data.descripcion}</p>
+        </div>
+      </div>
+      <ol className="process-list">
+        {data.pasos.map((step, index) => (
+          <li key={`${step}-${index}`}>{step}</li>
+        ))}
+      </ol>
+      <button className="refresh-button" onClick={onRefresh} disabled={loading} type="button">
+        <RefreshCw size={18} aria-hidden="true" />
+        {loading ? "Recalculando" : "Actualizar modelos"}
+      </button>
+    </section>
+  );
+}
+
 export default function App() {
   const path = window.location.pathname;
+
+  if (path.startsWith("/avanzado")) {
+    return <AdvancedAnalysisPage />;
+  }
 
   if (path.startsWith("/visualizaciones")) {
     return <AnalyticalVisualizationsPage />;
@@ -464,8 +828,6 @@ function ExecutiveDashboard() {
   const [data, setData] = useState(initialData);
   const [filters, setFilters] = useState({
     tienda: "",
-    fechaInicio: initialFilterOptions.fecha_min,
-    fechaFin: initialFilterOptions.fecha_max,
   });
   const [filterOptions, setFilterOptions] = useState(initialFilterOptions);
   const [loading, setLoading] = useState(true);
@@ -476,12 +838,10 @@ function ExecutiveDashboard() {
     setError("");
 
     try {
-      const selectedFilters = activeFilters?.fechaInicio === undefined ? filters : activeFilters;
+      const selectedFilters = activeFilters?.tienda === undefined ? filters : activeFilters;
       const params = new URLSearchParams();
 
       if (selectedFilters.tienda) params.set("tienda", selectedFilters.tienda);
-      if (selectedFilters.fechaInicio) params.set("fecha_inicio", selectedFilters.fechaInicio);
-      if (selectedFilters.fechaFin) params.set("fecha_fin", selectedFilters.fechaFin);
 
       const resumen = await fetchJson(`${endpoints.resumen}?${params.toString()}`);
 
@@ -491,6 +851,7 @@ function ExecutiveDashboard() {
         topClientes: resumen.top_clientes,
         categorias: resumen.categorias_rentables.filter((item) => item.nombre_categoria !== "Producto sin Categoría"),
         serieTiempo: resumen.serie_tiempo,
+        diasSemana: resumen.dias_semana ?? [],
       });
       setFilterOptions(resumen.filtros ?? initialFilterOptions);
     } catch (requestError) {
@@ -515,23 +876,11 @@ function ExecutiveDashboard() {
   function resetFilters() {
     const defaultFilters = {
       tienda: "",
-      fechaInicio: filterOptions.fecha_min,
-      fechaFin: filterOptions.fecha_max,
     };
 
     setFilters(defaultFilters);
     loadDashboard(defaultFilters);
   }
-
-  const peakDays = useMemo(() => {
-    return [...data.serieTiempo]
-      .sort((a, b) => Number(b.transacciones_diarias ?? 0) - Number(a.transacciones_diarias ?? 0))
-      .slice(0, 7)
-      .map((item) => ({
-        ...item,
-        fecha_corta: formatDate(normalizeDate(item.fecha)),
-      }));
-  }, [data.serieTiempo]);
 
   return (
     <main className="app-shell">
@@ -566,7 +915,7 @@ function ExecutiveDashboard() {
         <div className="filters-panel__header">
           <div>
             <p className="eyebrow">Consulta filtrada</p>
-            <h2>Transacciones y clientes</h2>
+            <h2>Filtro por tienda</h2>
           </div>
           <SlidersHorizontal size={22} aria-hidden="true" />
         </div>
@@ -584,32 +933,6 @@ function ExecutiveDashboard() {
                 </option>
               ))}
             </select>
-          </label>
-          <label className="filter-field">
-            <span>
-              <CalendarDays size={16} aria-hidden="true" />
-              Fecha inicio
-            </span>
-            <input
-              type="date"
-              min={filterOptions.fecha_min}
-              max={filters.fechaFin || filterOptions.fecha_max}
-              value={filters.fechaInicio}
-              onChange={(event) => updateFilter("fechaInicio", event.target.value)}
-            />
-          </label>
-          <label className="filter-field">
-            <span>
-              <CalendarDays size={16} aria-hidden="true" />
-              Fecha fin
-            </span>
-            <input
-              type="date"
-              min={filters.fechaInicio || filterOptions.fecha_min}
-              max={filterOptions.fecha_max}
-              value={filters.fechaFin}
-              onChange={(event) => updateFilter("fechaFin", event.target.value)}
-            />
           </label>
         </div>
         <div className="filters-panel__actions">
@@ -685,23 +1008,14 @@ function ExecutiveDashboard() {
 
           <section className="dashboard-grid dashboard-grid--wide-left">
             <TimeSeriesChart data={data.serieTiempo} />
-            <ExecutiveInsight serieTiempo={data.serieTiempo} categorias={data.categorias} />
+            <ExecutiveInsight diasSemana={data.diasSemana} categorias={data.categorias} />
           </section>
 
-          <section className="dashboard-grid">
+          <section className="dashboard-grid dashboard-grid--balanced">
+            <WeekdayHeatmap data={data.diasSemana} />
             <HorizontalBarList
-              title="Dias pico de compra"
-              subtitle="Transacciones diarias"
-              icon={CalendarDays}
-              data={peakDays}
-              labelKey="fecha_corta"
-              valueKey="transacciones_diarias"
-              emptyText="No hay datos diarios disponibles."
-              compact
-            />
-            <HorizontalBarList
-              title="Top 10 categorias por volumen"
-              subtitle="Unidades vendidas por categoria"
+              title="Categorias mas rentables"
+              subtitle="Volumen inferido por unidades"
               icon={Tags}
               data={data.categorias}
               labelKey="nombre_categoria"
@@ -710,6 +1024,179 @@ function ExecutiveDashboard() {
               compact
             />
           </section>
+        </>
+      )}
+    </main>
+  );
+}
+
+function AdvancedAnalysisPage() {
+  const [data, setData] = useState(initialAdvancedData);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState("");
+  const [lookupLoading, setLookupLoading] = useState(false);
+
+  async function loadAdvanced() {
+    setLoading(true);
+    setError("");
+
+    try {
+      const advanced = await fetchJson(endpoints.avanzado);
+      setData(advanced);
+    } catch (requestError) {
+      setError(requestError.message);
+      setData(initialAdvancedData);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function refreshModels() {
+    setRefreshing(true);
+    setError("");
+
+    try {
+      const advanced = await postJson(endpoints.refrescarAvanzado);
+      setData(advanced);
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  async function searchClient(clientId) {
+    setLookupLoading(true);
+    setError("");
+
+    try {
+      const response = await fetchJson(`${endpoints.recomendarCliente}/${clientId}`);
+      return response.recomendaciones ?? [];
+    } catch (requestError) {
+      setError(requestError.message);
+      return [];
+    } finally {
+      setLookupLoading(false);
+    }
+  }
+
+  async function searchProduct(productId) {
+    setLookupLoading(true);
+    setError("");
+
+    try {
+      const response = await fetchJson(`${endpoints.recomendarProducto}/${productId}`);
+      return response.recomendaciones ?? [];
+    } catch (requestError) {
+      setError(requestError.message);
+      return [];
+    } finally {
+      setLookupLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAdvanced();
+  }, []);
+
+  return (
+    <main className="app-shell">
+      <AppNavigation />
+      <header className="dashboard-header">
+        <div>
+          <p className="eyebrow">Modelado y diagnostico</p>
+          <h1>Analisis Avanzado</h1>
+          <p className="dashboard-header__copy">
+            Segmentacion de clientes con K-Means, recomendaciones por reglas de asociacion y flujo para regenerar
+            resultados con nuevos datos.
+          </p>
+        </div>
+        <button className="refresh-button" onClick={refreshModels} disabled={loading || refreshing} type="button">
+          <RefreshCw size={18} aria-hidden="true" />
+          {refreshing ? "Recalculando" : "Actualizar modelos"}
+        </button>
+      </header>
+
+      {error ? (
+        <section className="alert" role="alert">
+          <AlertCircle size={20} aria-hidden="true" />
+          <div>
+            <strong>No se pudo cargar el analisis avanzado</strong>
+            <p>{error}. Verifica que FastAPI este corriendo y que los CSV existan en data/DataSet.</p>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="metric-grid metric-grid--three" aria-label="Indicadores de analisis avanzado">
+        <MetricCard
+          icon={Users}
+          label="Clientes segmentados"
+          value={data.segmentacion.total_clientes}
+          helper="K-Means sobre comportamiento"
+          tone="green"
+        />
+        <MetricCard
+          icon={Brain}
+          label="Segmentos"
+          value={data.segmentacion.clusters.length}
+          helper="Grupos interpretados"
+          tone="blue"
+        />
+        <MetricCard
+          icon={Sparkles}
+          label="Variables"
+          value={data.segmentacion.variables.length}
+          helper="Frecuencia, volumen y diversidad"
+          tone="amber"
+        />
+      </section>
+
+      {loading ? (
+        <section className="loading-panel">
+          <RefreshCw size={22} aria-hidden="true" />
+          Calculando segmentacion y recomendaciones...
+        </section>
+      ) : (
+        <>
+          <section className="dashboard-grid dashboard-grid--wide-left">
+            <ClusterScatter points={data.segmentacion.puntos} />
+            <section className="panel panel--insight">
+              <div className="panel__header">
+                <div>
+                  <p className="eyebrow">Interpretacion</p>
+                  <h2>Lectura del modelo</h2>
+                </div>
+                <BarChart3 className="panel__icon" size={22} aria-hidden="true" />
+              </div>
+              <div className="insight-list">
+                <div>
+                  <span>Segmentacion de clientes</span>
+                  <strong>K-Means con 4 grupos</strong>
+                  <p>{data.segmentacion.interpretacion_general}</p>
+                </div>
+                <div>
+                  <span>Recomendador</span>
+                  <strong>{data.recomendador.metodo}</strong>
+                  <p>
+                    Las sugerencias salen de productos que aparecen juntos en los mismos tickets, excluyendo productos ya
+                    comprados por el cliente.
+                  </p>
+                </div>
+              </div>
+            </section>
+          </section>
+
+          <ClusterCards clusters={data.segmentacion.clusters} />
+
+          <RecommendationPanel
+            data={data}
+            onClientSearch={searchClient}
+            onProductSearch={searchProduct}
+            loading={lookupLoading}
+          />
+
+          <RegenerationPanel data={data.regeneracion} onRefresh={refreshModels} loading={refreshing} />
         </>
       )}
     </main>

@@ -1,5 +1,11 @@
 from fastapi import APIRouter
 from config.database import query_all, query_one
+from services.advanced_analysis import (
+    build_advanced_summary,
+    recommend_for_client,
+    recommend_for_product,
+    refresh_advanced_cache,
+)
 from services.csv_summary import build_summary
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
@@ -8,6 +14,33 @@ router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 @router.get("/resumen")
 def get_resumen(tienda: str | None = None, fecha_inicio: str | None = None, fecha_fin: str | None = None):
     return build_summary(store=tienda, start_date=fecha_inicio, end_date=fecha_fin)
+
+
+@router.get("/avanzado")
+def get_analisis_avanzado():
+    return build_advanced_summary()
+
+
+@router.post("/avanzado/refrescar")
+def refresh_analisis_avanzado():
+    return refresh_advanced_cache()
+
+
+@router.get("/recomendaciones/cliente/{cliente_id}")
+def get_recomendaciones_cliente(cliente_id: str):
+    return {
+        "cliente_id": int(cliente_id) if cliente_id.isdigit() else cliente_id,
+        "recomendaciones": recommend_for_client(cliente_id),
+    }
+
+
+@router.get("/recomendaciones/producto/{producto_id}")
+def get_recomendaciones_producto(producto_id: str):
+    return {
+        "producto_id": int(producto_id) if producto_id.isdigit() else producto_id,
+        "recomendaciones": recommend_for_product(producto_id),
+    }
+
 
 @router.get("/kpis")
 

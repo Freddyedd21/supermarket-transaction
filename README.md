@@ -18,7 +18,7 @@ Archivos principales:
 	- **Rol:** puente producto-categoría para el ranking de categorías
 	- **Formato:** con encabezado, separado por `|`
 	- **Columnas:** `v.Code_pr | v.code`
-	- **Nota:** puede asignar un mismo producto a varias categorías; para el top de categorías se cuenta cada relación.
+	- **Nota:** puede asignar varias categorías a un mismo producto; para evitar duplicados se toma solo la primera categoría encontrada por producto.
 
 - `data/DataSet/Products/Categories.csv`
 	- **Rol:** dimensión de categorías (diccionario)
@@ -33,8 +33,8 @@ El dataset se comporta como un modelo relacional tipo **estrella**:
 | Archivo | Rol en el negocio | Columnas detectadas | Observación clave |
 |---|---|---|---|
 | `*_Tran.csv` | Tabla de hechos (Fact) | `Fecha | Tienda_ID | Ticket_ID | Productos` | Cada fila representa un ticket/canasta; `Productos` viene “compactado” en un string. |
-| `ProductCategory.csv` | Tabla puente | `v.Code_pr | v.code` | Conecta cada producto con su categoría. |
-| `Categories.csv` | Dimensión | `ID_Categoria | Nombre_Categoria` | Traduce el código de categoría a un nombre legible. |
+| `ProductCategory.csv` | Tabla puente | `v.Code_pr | v.code` | Conecta cada producto con su categoría; si hay varias relaciones, se usa la primera. |
+| `Categories.csv` | Dimensión | `ID_Categoria | Nombre_Categoria` | Traduce el código vendido a un nombre legible de categoría. |
 
 ## Hallazgos críticos para el código
 
@@ -49,8 +49,8 @@ El dataset se comporta como un modelo relacional tipo **estrella**:
 
 - **Lectura correcta de categorías:**
 	- El análisis de top 10 categorías cruza cada código de `Productos` con `ProductCategory.csv` y luego con `Categories.csv`.
-	- Si un producto pertenece a varias categorías, suma una unidad en cada categoría relacionada.
-	- Este cruce reproduce el top esperado donde `CARNES PROCESADAS AL VACIO` y `VERDURAS RAIZ,TUBERCULO Y BULBOS` aparecen con `1.811.523` unidades.
+	- Si un producto aparece asociado a varias categorías, se toma solo la primera relación encontrada en `ProductCategory.csv`.
+	- Así cada producto vendido aporta una sola unidad a una sola categoría y se evita duplicar volúmenes.
 	- Los códigos vendidos sin relación en `ProductCategory.csv` se excluyen del ranking de categorías.
 
 - **Importante para visualizaciones:**
@@ -64,7 +64,7 @@ Flujo recomendado de transformaciones y cruces (joins):
 [Tickets con String de Productos]
 	|
 	v  (Split & Explode)
-[Fila por cada Código Vendido] ---> [ProductCategory.csv] ---> [Categories.csv]
+[Fila por cada Código Vendido] ---> [ProductCategory.csv: primera categoría] ---> [Categories.csv]
 ```
 
 Salida esperada (tabla unificada) para facilitar KPIs y gráficos:
@@ -141,12 +141,16 @@ Vistas principales:
 
 - `http://localhost:5173/` - Resumen Ejecutivo.
 - `http://localhost:5173/visualizaciones` - Visualizaciones Analíticas: serie de tiempo, boxplot y heatmap de correlación.
+- `http://localhost:5173/avanzado` - Análisis Avanzado: segmentación K-Means, recomendador y regeneración de modelos.
 
-Si sólo necesitas regenerar las métricas del heatmap sin correr todo Spark:
+Si agregas nuevas transacciones, regenera las tablas y refresca los modelos:
 
 ```powershell
-node .\backend\update_client_metrics_table.js
+cd .\spark_processing
+python .\aggregations.py
 ```
+
+Luego entra a `http://localhost:5173/avanzado` y usa el botón **Actualizar modelos**.
 
 ## Pregunta de validación
 

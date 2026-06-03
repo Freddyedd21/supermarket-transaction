@@ -47,9 +47,11 @@ const productCategoryRows = readLines(path.join(dataRoot, "Products", "ProductCa
 
 for (const line of productCategoryRows) {
   const [productId, categoryId] = line.split("|").map((value) => value.trim());
-  const categories = productCategories.get(productId) ?? new Set();
-  categories.add(categoryNames.get(categoryId) ?? `Categoria ${categoryId}`);
-  productCategories.set(productId, categories);
+  const categoryName = categoryNames.get(categoryId);
+
+  if (categoryName && !productCategories.has(productId)) {
+    productCategories.set(productId, categoryName);
+  }
 }
 
 const clientStats = new Map();
@@ -80,9 +82,8 @@ for (const file of fs.readdirSync(transactionsDir).filter((name) => name.endsWit
 
     for (const productId of products) {
       client.products.add(productId);
-      const categories = productCategories.get(productId) ?? new Set();
-
-      for (const category of categories) {
+      const category = productCategories.get(productId);
+      if (category) {
         client.categories.add(category);
       }
     }

@@ -26,7 +26,8 @@ except ImportError as exc:
     raise ImportError("Falta psycopg2-binary. Instálalo con: pip install psycopg2-binary") from exc
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, count, count_distinct, explode, split, monotonically_increasing_id, trim
+from pyspark.sql.functions import col, count, count_distinct, explode, split, monotonically_increasing_id, row_number, trim
+from pyspark.sql.window import Window
 
 # 1. Crear la sesión de Spark
 ENABLE_DB_WRITE = os.getenv("ENABLE_DB_WRITE", "1").strip().lower() in {"1", "true", "yes"}
@@ -58,9 +59,9 @@ df_transacciones = (
     .withColumn("tx_id", monotonically_increasing_id())
 )
 
-# Leemos el catálogo de categorías y el puente producto-categoría.
-# ProductCategory puede asignar un mismo producto a varias categorías; para el
-# top de categorías se cuenta cada relación producto-categoría encontrada.
+# Leemos el catálogo de categorías y tomamos solo la primera relación
+# producto-categoría para evitar duplicar unidades cuando un producto aparece
+# asociado a varias categorías.
 df_categorias = (
     spark.read.csv(path_categorias, sep="|", header=False, inferSchema=True)
     .toDF("id_categoria", "nombre_categoria")
@@ -68,11 +69,21 @@ df_categorias = (
     .withColumn("nombre_categoria", trim(col("nombre_categoria")))
 )
 
-df_product_categories = (
+df_product_categories_raw = (
     spark.read.csv(path_product_category, sep="|", header=True, inferSchema=True)
     .toDF("id_producto_categoria", "id_categoria_producto")
+    .withColumn("orden_categoria", monotonically_increasing_id())
     .withColumn("id_producto_categoria", trim(col("id_producto_categoria")).cast("int"))
     .withColumn("id_categoria_producto", trim(col("id_categoria_producto")).cast("int"))
+)
+
+product_category_window = Window.partitionBy("id_producto_categoria").orderBy("orden_categoria")
+
+df_product_categories = (
+    df_product_categories_raw
+    .withColumn("categoria_rank", row_number().over(product_category_window))
+    .filter(col("categoria_rank") == 1)
+    .drop("orden_categoria", "categoria_rank")
 )
 
 # ==========================================
@@ -89,18 +100,18 @@ df_detalles = (
 # Filtrar nulos resultantes de espacios dobles o vacíos en la lista de productos
 df_detalles = df_detalles.filter(col("id_producto").isNotNull())
 
-# B. Cruce de datos: Transacciones -> ProductoCategoria -> Categoría
+# B. Cruce de datos: Transacciones -> primera categoría del producto
 df_completo = (
     df_detalles
     .join(
         df_product_categories,
         df_detalles.id_producto == df_product_categories.id_producto_categoria,
-        "left"
+        "left",
     )
     .join(
         df_categorias,
         df_product_categories.id_categoria_producto == df_categorias.id_categoria,
-        "left"
+        "left",
     )
 )
 
