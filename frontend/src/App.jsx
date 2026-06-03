@@ -178,11 +178,68 @@ function TimeSeriesChart({ data }) {
     [data],
   );
 
-  const { points, areaPoints, maxUnits, firstDate, lastDate } = useMemo(() => {
+  const temporalAnalysis = useMemo(() => {
+    if (chartData.length === 0) return null;
+
+    const totalUnits = chartData.reduce((sum, item) => sum + item.unidades, 0);
+    const averageUnits = totalUnits / chartData.length;
+    const peakDay = chartData.reduce((best, item) => (item.unidades > best.unidades ? item : best), chartData[0]);
+    const lowDay = chartData.reduce((worst, item) => (item.unidades < worst.unidades ? item : worst), chartData[0]);
+    const aboveAverageDays = chartData.filter((item) => item.unidades >= averageUnits).length;
+    const firstWindow = chartData.slice(0, Math.min(7, chartData.length));
+    const lastWindow = chartData.slice(Math.max(chartData.length - 7, 0));
+    const firstAverage = firstWindow.reduce((sum, item) => sum + item.unidades, 0) / Math.max(firstWindow.length, 1);
+    const lastAverage = lastWindow.reduce((sum, item) => sum + item.unidades, 0) / Math.max(lastWindow.length, 1);
+    const trendPercent = firstAverage === 0 ? 0 : ((lastAverage - firstAverage) / firstAverage) * 100;
+
+    const weekdayTotals = new Map();
+    for (const item of chartData) {
+      const dayName = new Intl.DateTimeFormat("es-CO", { weekday: "long" }).format(new Date(`${item.fecha}T00:00:00`));
+      const current = weekdayTotals.get(dayName) ?? { total: 0, days: 0 };
+      weekdayTotals.set(dayName, { total: current.total + item.unidades, days: current.days + 1 });
+    }
+
+    const bestWeekday = [...weekdayTotals.entries()]
+      .map(([name, value]) => ({
+        name: name.charAt(0).toUpperCase() + name.slice(1),
+        average: value.total / Math.max(value.days, 1),
+      }))
+      .sort((a, b) => b.average - a.average)[0];
+
+    let trendLabel = "Estable";
+    let trendTone = "neutral";
+    let recommendation = "Mantener el abastecimiento base y vigilar los dias pico.";
+
+    if (trendPercent >= 6) {
+      trendLabel = "Al alza";
+      trendTone = "up";
+      recommendation = "Refuerza inventario y personal hacia el cierre del periodo.";
+    } else if (trendPercent <= -6) {
+      trendLabel = "A la baja";
+      trendTone = "down";
+      recommendation = "Revisa promociones o surtido: el volumen reciente esta cayendo.";
+    }
+
+    return {
+      averageUnits,
+      peakDay,
+      lowDay,
+      aboveAverageDays,
+      trendPercent,
+      trendLabel,
+      trendTone,
+      recommendation,
+      bestWeekday,
+    };
+  }, [chartData]);
+
+  const { points, areaPoints, smoothPoints, averageLineY, maxUnits, firstDate, lastDate } = useMemo(() => {
     if (chartData.length === 0) {
       return {
         points: "",
         areaPoints: "",
+        smoothPoints: "",
+        averageLineY: 0,
         maxUnits: 0,
         firstDate: "",
         lastDate: "",
@@ -196,25 +253,35 @@ function TimeSeriesChart({ data }) {
     const maxY = Math.max(...chartData.map((item) => item.unidades), 1);
     const usableWidth = width - paddingX * 2;
     const usableHeight = height - paddingY * 2;
+    const toX = (index) =>
+      paddingX +
+      (chartData.length === 1 ? usableWidth / 2 : (index / (chartData.length - 1)) * usableWidth);
+    const toY = (value) => paddingY + usableHeight - (value / maxY) * usableHeight;
 
     const linePoints = chartData
       .map((item, index) => {
-        const x =
-          paddingX +
-          (chartData.length === 1 ? usableWidth / 2 : (index / (chartData.length - 1)) * usableWidth);
-        const y = paddingY + usableHeight - (item.unidades / maxY) * usableHeight;
-        return `${x},${y}`;
+        return `${toX(index)},${toY(item.unidades)}`;
+      })
+      .join(" ");
+
+    const movingAveragePoints = chartData
+      .map((item, index) => {
+        const window = chartData.slice(Math.max(0, index - 6), index + 1);
+        const average = window.reduce((sum, value) => sum + value.unidades, 0) / window.length;
+        return `${toX(index)},${toY(average)}`;
       })
       .join(" ");
 
     return {
       points: linePoints,
       areaPoints: `${paddingX},${height - paddingY} ${linePoints} ${width - paddingX},${height - paddingY}`,
+      smoothPoints: movingAveragePoints,
+      averageLineY: toY(temporalAnalysis?.averageUnits ?? 0),
       maxUnits: maxY,
       firstDate: chartData[0].fecha,
       lastDate: chartData[chartData.length - 1].fecha,
     };
-  }, [chartData]);
+  }, [chartData, temporalAnalysis]);
 
   return (
     <section className="panel panel--wide">
@@ -240,8 +307,10 @@ function TimeSeriesChart({ data }) {
               </defs>
               <line x1="18" x2="702" y1="202" y2="202" className="chart-axis" />
               <line x1="18" x2="18" y1="18" y2="202" className="chart-axis" />
+              <line x1="18" x2="702" y1={averageLineY} y2={averageLineY} className="chart-average" />
               <polyline points={areaPoints} className="chart-area" />
               <polyline points={points} className="chart-line" />
+              <polyline points={smoothPoints} className="chart-line-smooth" />
             </svg>
           </div>
           <div className="chart-summary">
@@ -249,6 +318,56 @@ function TimeSeriesChart({ data }) {
             <strong>Maximo diario: {formatNumber(maxUnits)} unidades</strong>
             <span>{formatDate(lastDate)}</span>
           </div>
+          {temporalAnalysis ? (
+            <>
+              <div className="chart-legend" aria-label="Leyenda del grafico temporal">
+                <span><i className="legend-dot legend-dot--daily" /> Venta diaria</span>
+                <span><i className="legend-dot legend-dot--smooth" /> Tendencia 7 dias</span>
+                <span><i className="legend-dot legend-dot--average" /> Promedio general</span>
+              </div>
+              <div className="temporal-kpis" aria-label="Indicadores interpretables de ventas diarias">
+                <div>
+                  <span>Promedio diario</span>
+                  <strong>{formatNumber(Math.round(temporalAnalysis.averageUnits))}</strong>
+                  <small>Referencia para detectar dias altos o bajos</small>
+                </div>
+                <div>
+                  <span>Dias sobre promedio</span>
+                  <strong>
+                    {formatNumber(temporalAnalysis.aboveAverageDays)} / {formatNumber(chartData.length)}
+                  </strong>
+                  <small>Consistencia del periodo</small>
+                </div>
+                <div>
+                  <span>Mejor dia promedio</span>
+                  <strong>{temporalAnalysis.bestWeekday?.name ?? "Sin dato"}</strong>
+                  <small>{formatNumber(Math.round(temporalAnalysis.bestWeekday?.average ?? 0))} unidades</small>
+                </div>
+                <div className={`trend-pill trend-pill--${temporalAnalysis.trendTone}`}>
+                  <span>Tendencia 7 dias</span>
+                  <strong>{temporalAnalysis.trendLabel}</strong>
+                  <small>{temporalAnalysis.trendPercent >= 0 ? "+" : ""}{temporalAnalysis.trendPercent.toFixed(1)}%</small>
+                </div>
+              </div>
+              <div className="temporal-reading">
+                <div>
+                  <span>Pico de demanda</span>
+                  <strong>{formatDate(temporalAnalysis.peakDay.fecha)}</strong>
+                  <p>{formatNumber(temporalAnalysis.peakDay.unidades)} unidades. Usalo como referencia para inventario y turnos.</p>
+                </div>
+                <div>
+                  <span>Dia mas bajo</span>
+                  <strong>{formatDate(temporalAnalysis.lowDay.fecha)}</strong>
+                  <p>{formatNumber(temporalAnalysis.lowDay.unidades)} unidades. Sirve para comparar dias de baja actividad.</p>
+                </div>
+                <div>
+                  <span>Decision sugerida</span>
+                  <strong>{temporalAnalysis.recommendation}</strong>
+                  <p>La linea dorada resume la tendencia y reduce el ruido del dia a dia.</p>
+                </div>
+              </div>
+            </>
+          ) : null}
         </>
       )}
     </section>

@@ -440,6 +440,21 @@ button {
   stroke-width: 4;
 }
 
+.chart-line-smooth {
+  fill: none;
+  stroke: #e9a63a;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.chart-average {
+  stroke: #526170;
+  stroke-dasharray: 7 7;
+  stroke-width: 1.5;
+  opacity: 0.8;
+}
+
 .chart-summary {
   display: flex;
   align-items: center;
@@ -453,6 +468,105 @@ button {
 .chart-summary strong {
   color: #1f2e3b;
   text-align: center;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 12px;
+  color: #526170;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 22px;
+  height: 4px;
+  border-radius: 999px;
+}
+
+.legend-dot--daily {
+  background: #2a9d8f;
+}
+
+.legend-dot--smooth {
+  background: #e9a63a;
+}
+
+.legend-dot--average {
+  background: repeating-linear-gradient(90deg, #526170 0 6px, transparent 6px 10px);
+}
+
+.temporal-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.temporal-kpis div,
+.temporal-reading div {
+  min-width: 0;
+  border: 1px solid #dce5e1;
+  border-radius: 8px;
+  background: #fbfdfc;
+  padding: 12px;
+}
+
+.temporal-kpis span,
+.temporal-reading span {
+  display: block;
+  color: #697789;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.temporal-kpis strong,
+.temporal-reading strong {
+  display: block;
+  margin-top: 5px;
+  color: #16222e;
+  font-size: 1rem;
+  line-height: 1.25;
+}
+
+.temporal-kpis small,
+.temporal-reading p {
+  display: block;
+  margin-top: 5px;
+  color: #627080;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.trend-pill--up {
+  border-color: #7cc6a5;
+  background: #eefaf4;
+}
+
+.trend-pill--down {
+  border-color: #e2a59a;
+  background: #fff7f5;
+}
+
+.trend-pill--neutral {
+  border-color: #dce5e1;
+  background: #fbfdfc;
+}
+
+.temporal-reading {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .boxplot-chart {
@@ -659,7 +773,9 @@ button {
   .metric-grid,
   .metric-grid--three,
   .dashboard-grid,
-  .dashboard-grid--wide-left {
+  .dashboard-grid--wide-left,
+  .temporal-kpis,
+  .temporal-reading {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -703,7 +819,9 @@ button {
   .metric-grid,
   .metric-grid--three,
   .dashboard-grid,
-  .dashboard-grid--wide-left {
+  .dashboard-grid--wide-left,
+  .temporal-kpis,
+  .temporal-reading {
     grid-template-columns: 1fr;
   }
 
