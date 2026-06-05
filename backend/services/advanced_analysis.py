@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 from functools import lru_cache
 from itertools import combinations
+import json
 from math import log1p, sqrt
 from pathlib import Path
 
@@ -10,6 +11,7 @@ DATA_ROOT = PROJECT_ROOT / "data" / "DataSet"
 TRANSACTIONS_DIR = DATA_ROOT / "Transactions"
 CATEGORIES_FILE = DATA_ROOT / "Products" / "Categories.csv"
 PRODUCT_CATEGORY_FILE = DATA_ROOT / "Products" / "ProductCategory.csv"
+CACHE_FILE = PROJECT_ROOT / "backend" / "cache" / "advanced_summary.json"
 
 CLUSTER_COUNT = 4
 KMEANS_ITERATIONS = 8
@@ -420,12 +422,31 @@ def _build_model():
     return model
 
 
-def build_advanced_summary():
+def _read_cached_summary():
+    if not CACHE_FILE.exists():
+        return None
+
+    with CACHE_FILE.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def _write_cached_summary(summary):
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with CACHE_FILE.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False)
+
+
+def build_advanced_summary(use_cache=True):
+    if use_cache:
+        cached_summary = _read_cached_summary()
+        if cached_summary:
+            return cached_summary
+
     model = _build_model()
     default_client = model["recomendador"]["clientes_sugeridos"][0]["cliente_id"] if model["recomendador"]["clientes_sugeridos"] else ""
     default_product = model["recomendador"]["productos_sugeridos"][0]["id_producto"] if model["recomendador"]["productos_sugeridos"] else ""
 
-    return {
+    summary = {
         "segmentacion": model["segmentacion"],
         "recomendador": model["recomendador"],
         "ejemplos": {
@@ -443,6 +464,8 @@ def build_advanced_summary():
             ],
         },
     }
+    _write_cached_summary(summary)
+    return summary
 
 
 def recommend_for_client(client_id, limit=8):
@@ -455,4 +478,4 @@ def recommend_for_product(product_id, limit=8):
 
 def refresh_advanced_cache():
     _build_model.cache_clear()
-    return build_advanced_summary()
+    return build_advanced_summary(use_cache=False)

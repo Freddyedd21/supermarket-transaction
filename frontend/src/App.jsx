@@ -31,7 +31,9 @@ const endpoints = {
   topClientes: "/api/analytics/top_clientes",
   categorias: "/api/analytics/categorias_rentables",
   serieTiempo: "/api/analytics/serie_tiempo",
+  visualizaciones: "/api/analytics/visualizaciones",
   boxplotClientes: "/api/analytics/boxplot_clientes",
+  boxplotClientesResumen: "/api/analytics/boxplot_clientes_resumen",
   correlacionClientes: "/api/analytics/correlacion_clientes",
   avanzado: "/api/analytics/avanzado",
   refrescarAvanzado: "/api/analytics/avanzado/refrescar",
@@ -56,6 +58,7 @@ const initialFilterOptions = {
 
 const initialAnalyticalData = {
   serieTiempo: [],
+  diasSemana: [],
   boxplotClientes: [],
   correlacionClientes: [],
 };
@@ -356,6 +359,77 @@ function TimeSeriesChart({ data }) {
   );
 }
 
+function WeeklySalesChart({ data }) {
+  const weeklyData = useMemo(() => {
+    const daily = data
+      .map((item) => ({
+        fecha: normalizeDate(item.fecha),
+        unidades: Number(item.unidades_vendidas ?? 0),
+        transacciones: Number(item.transacciones_diarias ?? 0),
+      }))
+      .filter((item) => item.fecha)
+      .sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+    const weeks = [];
+    for (let index = 0; index < daily.length; index += 7) {
+      const chunk = daily.slice(index, index + 7);
+      const first = chunk[0];
+      const last = chunk[chunk.length - 1];
+      weeks.push({
+        label: `${formatDate(first.fecha)} - ${formatDate(last.fecha)}`,
+        shortLabel: `Sem. ${weeks.length + 1}`,
+        unidades: chunk.reduce((sum, item) => sum + item.unidades, 0),
+        transacciones: chunk.reduce((sum, item) => sum + item.transacciones, 0),
+      });
+    }
+
+    return weeks;
+  }, [data]);
+
+  const maxUnits = Math.max(...weeklyData.map((item) => item.unidades), 1);
+  const peakWeek = [...weeklyData].sort((a, b) => b.unidades - a.unidades)[0];
+  const firstHalf = weeklyData.slice(0, Math.ceil(weeklyData.length / 2));
+  const secondHalf = weeklyData.slice(Math.ceil(weeklyData.length / 2));
+  const firstAverage = firstHalf.reduce((sum, item) => sum + item.unidades, 0) / Math.max(firstHalf.length, 1);
+  const secondAverage = secondHalf.reduce((sum, item) => sum + item.unidades, 0) / Math.max(secondHalf.length, 1);
+  const trend = firstAverage ? ((secondAverage - firstAverage) / firstAverage) * 100 : 0;
+
+  return (
+    <section className="panel panel--wide">
+      <div className="panel__header">
+        <div>
+          <p className="eyebrow">Tendencia semanal</p>
+          <h2>Ventas por semana</h2>
+        </div>
+        <CalendarDays className="panel__icon" size={22} aria-hidden="true" />
+      </div>
+
+      {weeklyData.length === 0 ? (
+        <div className="empty-state">No hay datos semanales disponibles.</div>
+      ) : (
+        <>
+          <div className="weekly-chart" role="img" aria-label="Ventas agregadas por semana">
+            {weeklyData.map((week) => {
+              const height = `${Math.max((week.unidades / maxUnits) * 100, 8)}%`;
+              return (
+                <div className="weekly-chart__bar" key={week.shortLabel}>
+                  <div className="weekly-chart__column" style={{ height }} title={`${week.label}: ${formatNumber(week.unidades)} unidades`} />
+                  <span>{week.shortLabel}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="stat-strip">
+            <strong>Semana pico: {peakWeek?.shortLabel} ({formatNumber(peakWeek?.unidades)} unidades)</strong>
+            <span>Tendencia segunda mitad: {formatDecimal(trend)}%</span>
+            <span>{formatNumber(weeklyData.length)} semanas analizadas</span>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function percentile(sortedValues, position) {
   if (sortedValues.length === 0) return 0;
 
@@ -369,6 +443,35 @@ function percentile(sortedValues, position) {
 
 function BoxplotChart({ data }) {
   const stats = useMemo(() => {
+    if (data && !Array.isArray(data) && data.q1 !== undefined) {
+      const maxScale = Math.max(Number(data.limite_superior ?? 0), Number(data.q3 ?? 0), Number(data.mediana ?? 0), 1);
+      const toX = (value) => {
+        const boundedValue = Math.min(Math.max(Number(value ?? 0), 0), maxScale);
+        return 64 + (boundedValue / maxScale) * 592;
+      };
+
+      return {
+        min: Number(data.minimo ?? 0),
+        q1: Number(data.q1 ?? 0),
+        median: Number(data.mediana ?? 0),
+        q3: Number(data.q3 ?? 0),
+        max: Number(data.maximo ?? 0),
+        lowerFence: Number(data.limite_inferior ?? 0),
+        upperFence: Number(data.limite_superior ?? 0),
+        outliers: Number(data.atipicos ?? 0),
+        total: Number(data.total ?? 0),
+        x: {
+          lower: toX(Number(data.limite_inferior ?? 0)),
+          q1: toX(Number(data.q1 ?? 0)),
+          median: toX(Number(data.mediana ?? 0)),
+          q3: toX(Number(data.q3 ?? 0)),
+          upper: toX(Number(data.limite_superior ?? 0)),
+        },
+      };
+    }
+
+    if (!Array.isArray(data)) return null;
+
     const values = data
       .map((item) => Number(item.cantidad_total_cliente ?? 0))
       .filter((value) => Number.isFinite(value))
@@ -382,9 +485,12 @@ function BoxplotChart({ data }) {
     const iqr = q3 - q1;
     const lowerFence = Math.max(values[0], q1 - 1.5 * iqr);
     const upperFence = Math.min(values[values.length - 1], q3 + 1.5 * iqr);
-    const outliers = values.filter((value) => value < lowerFence || value > upperFence).length;
+    const outlierValues = values.filter((value) => value < lowerFence || value > upperFence);
     const maxScale = Math.max(upperFence, q3, median, 1);
-    const toX = (value) => 48 + (value / maxScale) * 624;
+    const toX = (value) => {
+      const boundedValue = Math.min(Math.max(Number(value ?? 0), 0), maxScale);
+      return 64 + (boundedValue / maxScale) * 592;
+    };
 
     return {
       min: values[0],
@@ -394,7 +500,7 @@ function BoxplotChart({ data }) {
       max: values[values.length - 1],
       lowerFence,
       upperFence,
-      outliers,
+      outliers: outlierValues.length,
       total: values.length,
       x: {
         lower: toX(lowerFence),
@@ -421,8 +527,8 @@ function BoxplotChart({ data }) {
       ) : (
         <>
           <div className="boxplot-chart">
-            <svg viewBox="0 0 720 180" role="img" aria-label="Boxplot de unidades compradas por cliente">
-              <line x1="48" x2="672" y1="92" y2="92" className="boxplot-axis" />
+            <svg viewBox="0 0 720 210" role="img" aria-label="Boxplot de unidades compradas por cliente">
+              <line x1="64" x2="656" y1="92" y2="92" className="boxplot-axis" />
               <line x1={stats.x.lower} x2={stats.x.q1} y1="92" y2="92" className="boxplot-whisker" />
               <line x1={stats.x.q3} x2={stats.x.upper} y1="92" y2="92" className="boxplot-whisker" />
               <line x1={stats.x.lower} x2={stats.x.lower} y1="68" y2="116" className="boxplot-cap" />
@@ -436,6 +542,21 @@ function BoxplotChart({ data }) {
                 className="boxplot-box"
               />
               <line x1={stats.x.median} x2={stats.x.median} y1="48" y2="136" className="boxplot-median" />
+              <text x={stats.x.lower} y="164" className="boxplot-scale-label">
+                Min {formatNumber(Math.round(stats.lowerFence))}
+              </text>
+              <text x={stats.x.q1} y="184" className="boxplot-scale-label">
+                Q1 {formatNumber(Math.round(stats.q1))}
+              </text>
+              <text x={stats.x.median} y="164" className="boxplot-scale-label">
+                Med {formatNumber(Math.round(stats.median))}
+              </text>
+              <text x={stats.x.q3} y="184" className="boxplot-scale-label">
+                Q3 {formatNumber(Math.round(stats.q3))}
+              </text>
+              <text x={stats.x.upper} y="164" className="boxplot-scale-label">
+                Umbral {formatNumber(Math.round(stats.upperFence))}
+              </text>
             </svg>
           </div>
           <div className="stat-strip">
@@ -443,9 +564,70 @@ function BoxplotChart({ data }) {
             <strong>Mediana: {formatNumber(Math.round(stats.median))}</strong>
             <span>Q3: {formatNumber(Math.round(stats.q3))}</span>
             <span>Atipicos: {formatNumber(stats.outliers)}</span>
+            <span>Umbral alto: {formatNumber(Math.round(stats.upperFence))}</span>
           </div>
         </>
       )}
+    </section>
+  );
+}
+
+function OutlierSummary({ data }) {
+  const summary = useMemo(() => {
+    if (!data || Array.isArray(data) || data.q1 === undefined) {
+      return {
+        outliers: 0,
+        upperFence: 0,
+        max: 0,
+        sample: [],
+      };
+    }
+
+    return {
+      outliers: Number(data.atipicos ?? 0),
+      upperFence: Number(data.limite_superior ?? 0),
+      max: Number(data.maximo ?? 0),
+      sample: (data.outliers_muestra ?? []).slice(0, 8),
+    };
+  }, [data]);
+
+  return (
+    <section className="panel panel--insight">
+      <div className="panel__header">
+        <div>
+          <p className="eyebrow">Outliers</p>
+          <h2>Clientes atipicos</h2>
+        </div>
+        <AlertCircle className="panel__icon" size={22} aria-hidden="true" />
+      </div>
+      <div className="insight-list">
+        <div>
+          <span>Total detectado</span>
+          <strong>{formatNumber(summary.outliers)}</strong>
+          <p>Clientes por encima del umbral alto de {formatNumber(Math.round(summary.upperFence))} unidades.</p>
+        </div>
+        <div>
+          <span>Maximo observado</span>
+          <strong>{formatNumber(Math.round(summary.max))} unidades</strong>
+          <p>Se separa del boxplot para que la caja central conserve una escala legible.</p>
+        </div>
+      </div>
+      {summary.sample.length > 0 ? (
+        <div className="outlier-ranking" aria-label="Ranking de clientes atipicos">
+          <div className="outlier-ranking__head">
+            <span>#</span>
+            <span>Cliente</span>
+            <span>Unidades</span>
+          </div>
+          {summary.sample.map((item, index) => (
+            <div className="outlier-ranking__row" key={`${item.cliente_id ?? "outlier"}-${item.valor}-${index}`}>
+              <strong>{index + 1}</strong>
+              <span>{item.cliente_id ? item.cliente_id : "Sin ID"}</span>
+              <b>{formatNumber(Math.round(Number(item.valor ?? 0)))}</b>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -508,14 +690,11 @@ function HeatmapCorrelation({ data }) {
   );
 }
 
-function ExecutiveInsight({ diasSemana, categorias }) {
-  const peakDay = useMemo(() => {
-    return [...diasSemana].sort(
-      (a, b) => Number(b.transacciones ?? 0) - Number(a.transacciones ?? 0),
-    )[0];
-  }, [diasSemana]);
-
+function ExecutiveInsight({ categorias }) {
   const topCategory = categorias[0];
+  const topThreeUnits = categorias.slice(0, 3).reduce((sum, item) => sum + Number(item.unidades_vendidas ?? 0), 0);
+  const totalUnits = categorias.reduce((sum, item) => sum + Number(item.unidades_vendidas ?? 0), 0);
+  const concentration = totalUnits ? (topThreeUnits / totalUnits) * 100 : 0;
 
   return (
     <section className="panel panel--insight">
@@ -529,22 +708,18 @@ function ExecutiveInsight({ diasSemana, categorias }) {
 
       <div className="insight-list">
         <div>
-          <span>Dia de semana pico</span>
-          <strong>{peakDay?.dia ?? "Sin datos"}</strong>
-          <p>
-            {peakDay
-              ? `${formatNumber(peakDay.transacciones)} transacciones registradas.`
-              : "No hay registros para calcular el pico semanal."}
-          </p>
-        </div>
-        <div>
-          <span>Categoría con mayor volumen</span>
+          <span>Categoria con mayor volumen</span>
           <strong>{topCategory?.nombre_categoria ?? "Sin datos"}</strong>
           <p>
             {topCategory
               ? `${formatNumber(topCategory.unidades_vendidas)} unidades vendidas.`
-              : "No hay categorías agregadas para comparar."}
+              : "No hay categorias agregadas para comparar."}
           </p>
+        </div>
+        <div>
+          <span>Concentracion del top 3</span>
+          <strong>{formatDecimal(concentration)}%</strong>
+          <p>Participacion relativa de las tres categorias lideres dentro del ranking visible.</p>
         </div>
       </div>
     </section>
@@ -617,26 +792,22 @@ function ClusterScatter({ points }) {
                     cy={y}
                     r="5"
                     fill={clusterColors[point.cluster % clusterColors.length]}
-                    opacity="0.74"
+                    opacity="0.68"
                     key={`${point.cliente_id}-${index}`}
-                  />
+                  >
+                    <title>
+                      Cliente {point.cliente_id}: {formatNumber(point.volumen_total)} unidades compradas
+                    </title>
+                  </circle>
                 );
               })}
               <text x={width / 2} y={height - 8} className="chart-label">
                 Volumen total de compra
               </text>
               <text x="14" y={height / 2} className="chart-label chart-label--vertical">
-                Productos distintos
+                Clientes segmentados
               </text>
             </svg>
-          </div>
-          <div className="cluster-legend">
-            {[0, 1, 2, 3].map((cluster) => (
-              <span key={cluster}>
-                <i style={{ backgroundColor: clusterColors[cluster] }} />
-                Grupo {cluster + 1}
-              </span>
-            ))}
           </div>
         </>
       )}
@@ -1007,12 +1178,11 @@ function ExecutiveDashboard() {
           </section>
 
           <section className="dashboard-grid dashboard-grid--wide-left">
-            <TimeSeriesChart data={data.serieTiempo} />
-            <ExecutiveInsight diasSemana={data.diasSemana} categorias={data.categorias} />
+            <WeeklySalesChart data={data.serieTiempo} />
+            <ExecutiveInsight categorias={data.categorias} />
           </section>
 
-          <section className="dashboard-grid dashboard-grid--balanced">
-            <WeekdayHeatmap data={data.diasSemana} />
+          <section className="dashboard-grid dashboard-grid--single">
             <HorizontalBarList
               title="Categorias mas rentables"
               subtitle="Volumen inferido por unidades"
@@ -1208,21 +1378,18 @@ function AnalyticalVisualizationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  async function loadVisualizations() {
+  async function loadVisualizations(forceRefresh = false) {
     setLoading(true);
     setError("");
 
     try {
-      const [serieTiempo, boxplotClientes, correlacionClientes] = await Promise.all([
-        fetchJson(endpoints.serieTiempo),
-        fetchJson(endpoints.boxplotClientes),
-        fetchJson(endpoints.correlacionClientes),
-      ]);
+      const visualizaciones = await fetchJson(`${endpoints.visualizaciones}${forceRefresh ? "?refresh=true" : ""}`);
 
       setData({
-        serieTiempo,
-        boxplotClientes,
-        correlacionClientes,
+        serieTiempo: visualizaciones.serie_tiempo ?? [],
+        diasSemana: visualizaciones.dias_semana ?? [],
+        boxplotClientes: visualizaciones.boxplot_clientes ?? {},
+        correlacionClientes: visualizaciones.correlacion_clientes ?? [],
       });
     } catch (requestError) {
       setError(requestError.message);
@@ -1247,7 +1414,7 @@ function AnalyticalVisualizationsPage() {
             Tendencia temporal, distribucion de compras por cliente y correlaciones entre metricas de comportamiento.
           </p>
         </div>
-        <button className="refresh-button" onClick={loadVisualizations} disabled={loading} type="button">
+        <button className="refresh-button" onClick={() => loadVisualizations(true)} disabled={loading} type="button">
           <RefreshCw size={18} aria-hidden="true" />
           {loading ? "Actualizando" : "Actualizar"}
         </button>
@@ -1276,15 +1443,15 @@ function AnalyticalVisualizationsPage() {
         <MetricCard
           icon={Users}
           label="Clientes analizados"
-          value={data.boxplotClientes.length}
+          value={data.boxplotClientes.total ?? data.boxplotClientes.length}
           helper="Distribucion por cliente"
           tone="blue"
         />
         <MetricCard
           icon={Activity}
-          label="Correlaciones"
-          value={data.correlacionClientes.length}
-          helper="Matriz de metricas"
+          label="Dias de compra"
+          value={data.diasSemana.length}
+          helper="Patron semanal"
           tone="amber"
         />
       </section>
@@ -1298,6 +1465,19 @@ function AnalyticalVisualizationsPage() {
         <>
           <section className="dashboard-grid dashboard-grid--wide-left">
             <TimeSeriesChart data={data.serieTiempo} />
+            <WeekdayHeatmap data={data.diasSemana} />
+          </section>
+
+          <section className="dashboard-grid dashboard-grid--wide-left">
+            <BoxplotChart data={data.boxplotClientes} />
+            <OutlierSummary data={data.boxplotClientes} />
+          </section>
+
+          <section className="dashboard-grid dashboard-grid--single">
+            <HeatmapCorrelation data={data.correlacionClientes} />
+          </section>
+
+          <section className="dashboard-grid dashboard-grid--single">
             <section className="panel panel--insight">
               <div className="panel__header">
                 <div>
@@ -1310,7 +1490,7 @@ function AnalyticalVisualizationsPage() {
                 <div>
                   <span>Serie de tiempo</span>
                   <strong>Tendencias y estacionalidad</strong>
-                  <p>Permite ubicar dias de mayor volumen y cambios de comportamiento durante el periodo.</p>
+                  <p>La agregacion semanal permite comparar picos, caidas y cambios de tendencia con menos ruido diario.</p>
                 </div>
                 <div>
                   <span>Boxplot y heatmap</span>
@@ -1319,11 +1499,6 @@ function AnalyticalVisualizationsPage() {
                 </div>
               </div>
             </section>
-          </section>
-
-          <section className="dashboard-grid">
-            <BoxplotChart data={data.boxplotClientes} />
-            <HeatmapCorrelation data={data.correlacionClientes} />
           </section>
         </>
       )}

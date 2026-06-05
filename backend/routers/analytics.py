@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 from fastapi import APIRouter
 from config.database import query_all, query_one
 from services.advanced_analysis import (
@@ -76,9 +78,114 @@ def get_categorias_rentables():
 def get_serie_tiempo():
     return query_all("SELECT * FROM serie_tiempo")
 
+
+@lru_cache(maxsize=1)
+def _build_visualizaciones():
+    resumen = build_summary()
+    return {
+        "serie_tiempo": get_serie_tiempo(),
+        "dias_semana": resumen["dias_semana"],
+        "boxplot_clientes": get_boxplot_clientes_resumen(),
+        "correlacion_clientes": get_correlacion_clientes(),
+    }
+
+
+@router.get("/visualizaciones")
+def get_visualizaciones(refresh: bool = False):
+    if refresh:
+        _build_visualizaciones.cache_clear()
+
+    return _build_visualizaciones()
+
 @router.get("/boxplot_clientes")
 def get_boxplot_clientes():
     return query_all("SELECT * FROM boxplot_clientes")
+
+
+@router.get("/boxplot_clientes_resumen")
+def get_boxplot_clientes_resumen():
+    stats = query_one(
+        """
+        WITH valores AS (
+            SELECT
+                cliente_id,
+                cantidad_total_cliente::double precision AS valor
+            FROM boxplot_clientes
+        ),
+        percentiles AS (
+            SELECT
+                MIN(valor) AS minimo,
+                MAX(valor) AS maximo,
+                percentile_cont(0.25) WITHIN GROUP (ORDER BY valor) AS q1,
+                percentile_cont(0.50) WITHIN GROUP (ORDER BY valor) AS mediana,
+                percentile_cont(0.75) WITHIN GROUP (ORDER BY valor) AS q3,
+                COUNT(*) AS total
+            FROM valores
+        ),
+        limites AS (
+            SELECT
+                minimo,
+                maximo,
+                q1,
+                mediana,
+                q3,
+                total,
+                GREATEST(minimo, q1 - 1.5 * (q3 - q1)) AS limite_inferior,
+                LEAST(maximo, q3 + 1.5 * (q3 - q1)) AS limite_superior
+            FROM percentiles
+        )
+        SELECT
+            minimo,
+            maximo,
+            q1,
+            mediana,
+            q3,
+            limite_inferior,
+            limite_superior,
+            total,
+            (
+                SELECT COUNT(*)
+                FROM valores, limites
+                WHERE valor < limite_inferior OR valor > limite_superior
+            ) AS atipicos
+        FROM limites
+        """
+    )
+
+    outliers = query_all(
+        """
+        WITH valores AS (
+            SELECT
+                cliente_id,
+                cantidad_total_cliente::double precision AS valor
+            FROM boxplot_clientes
+        ),
+        percentiles AS (
+            SELECT
+                MIN(valor) AS minimo,
+                MAX(valor) AS maximo,
+                percentile_cont(0.25) WITHIN GROUP (ORDER BY valor) AS q1,
+                percentile_cont(0.75) WITHIN GROUP (ORDER BY valor) AS q3
+            FROM valores
+        ),
+        limites AS (
+            SELECT
+                GREATEST(minimo, q1 - 1.5 * (q3 - q1)) AS limite_inferior,
+                LEAST(maximo, q3 + 1.5 * (q3 - q1)) AS limite_superior
+            FROM percentiles
+        )
+        SELECT cliente_id, valor
+        FROM valores, limites
+        WHERE valor < limite_inferior OR valor > limite_superior
+        ORDER BY valor DESC
+        LIMIT 90
+        """
+    )
+
+    return {
+        **stats,
+        "outliers_muestra": outliers,
+    }
 
 
 @router.get("/correlacion_clientes")
@@ -93,32 +200,51 @@ def get_correlacion_clientes():
                 cantidad_promedio::double precision AS promedio,
                 diversidad_categorias::double precision AS categorias
             FROM metricas_clientes
+        ),
+        correlaciones AS (
+            SELECT
+                corr(frecuencia, volumen) AS frecuencia_volumen,
+                corr(frecuencia, productos) AS frecuencia_productos,
+                corr(frecuencia, promedio) AS frecuencia_promedio,
+                corr(frecuencia, categorias) AS frecuencia_categorias,
+                corr(volumen, productos) AS volumen_productos,
+                corr(volumen, promedio) AS volumen_promedio,
+                corr(volumen, categorias) AS volumen_categorias,
+                corr(productos, promedio) AS productos_promedio,
+                corr(productos, categorias) AS productos_categorias,
+                corr(promedio, categorias) AS promedio_categorias
+            FROM metricas
         )
-        SELECT 'Frecuencia' AS variable_x, 'Frecuencia' AS variable_y, 1.0 AS correlacion FROM metricas
-        UNION ALL SELECT 'Frecuencia', 'Volumen total', corr(frecuencia, volumen) FROM metricas
-        UNION ALL SELECT 'Frecuencia', 'Productos distintos', corr(frecuencia, productos) FROM metricas
-        UNION ALL SELECT 'Frecuencia', 'Cantidad promedio', corr(frecuencia, promedio) FROM metricas
-        UNION ALL SELECT 'Frecuencia', 'Diversidad categorias', corr(frecuencia, categorias) FROM metricas
-        UNION ALL SELECT 'Volumen total', 'Frecuencia', corr(volumen, frecuencia) FROM metricas
-        UNION ALL SELECT 'Volumen total', 'Volumen total', 1.0 FROM metricas
-        UNION ALL SELECT 'Volumen total', 'Productos distintos', corr(volumen, productos) FROM metricas
-        UNION ALL SELECT 'Volumen total', 'Cantidad promedio', corr(volumen, promedio) FROM metricas
-        UNION ALL SELECT 'Volumen total', 'Diversidad categorias', corr(volumen, categorias) FROM metricas
-        UNION ALL SELECT 'Productos distintos', 'Frecuencia', corr(productos, frecuencia) FROM metricas
-        UNION ALL SELECT 'Productos distintos', 'Volumen total', corr(productos, volumen) FROM metricas
-        UNION ALL SELECT 'Productos distintos', 'Productos distintos', 1.0 FROM metricas
-        UNION ALL SELECT 'Productos distintos', 'Cantidad promedio', corr(productos, promedio) FROM metricas
-        UNION ALL SELECT 'Productos distintos', 'Diversidad categorias', corr(productos, categorias) FROM metricas
-        UNION ALL SELECT 'Cantidad promedio', 'Frecuencia', corr(promedio, frecuencia) FROM metricas
-        UNION ALL SELECT 'Cantidad promedio', 'Volumen total', corr(promedio, volumen) FROM metricas
-        UNION ALL SELECT 'Cantidad promedio', 'Productos distintos', corr(promedio, productos) FROM metricas
-        UNION ALL SELECT 'Cantidad promedio', 'Cantidad promedio', 1.0 FROM metricas
-        UNION ALL SELECT 'Cantidad promedio', 'Diversidad categorias', corr(promedio, categorias) FROM metricas
-        UNION ALL SELECT 'Diversidad categorias', 'Frecuencia', corr(categorias, frecuencia) FROM metricas
-        UNION ALL SELECT 'Diversidad categorias', 'Volumen total', corr(categorias, volumen) FROM metricas
-        UNION ALL SELECT 'Diversidad categorias', 'Productos distintos', corr(categorias, productos) FROM metricas
-        UNION ALL SELECT 'Diversidad categorias', 'Cantidad promedio', corr(categorias, promedio) FROM metricas
-        UNION ALL SELECT 'Diversidad categorias', 'Diversidad categorias', 1.0 FROM metricas
+        SELECT matriz.variable_x, matriz.variable_y, matriz.correlacion
+        FROM correlaciones c
+        CROSS JOIN LATERAL (
+            VALUES
+                ('Frecuencia', 'Frecuencia', 1.0::double precision),
+                ('Frecuencia', 'Volumen total', c.frecuencia_volumen),
+                ('Frecuencia', 'Productos distintos', c.frecuencia_productos),
+                ('Frecuencia', 'Cantidad promedio', c.frecuencia_promedio),
+                ('Frecuencia', 'Diversidad categorias', c.frecuencia_categorias),
+                ('Volumen total', 'Frecuencia', c.frecuencia_volumen),
+                ('Volumen total', 'Volumen total', 1.0::double precision),
+                ('Volumen total', 'Productos distintos', c.volumen_productos),
+                ('Volumen total', 'Cantidad promedio', c.volumen_promedio),
+                ('Volumen total', 'Diversidad categorias', c.volumen_categorias),
+                ('Productos distintos', 'Frecuencia', c.frecuencia_productos),
+                ('Productos distintos', 'Volumen total', c.volumen_productos),
+                ('Productos distintos', 'Productos distintos', 1.0::double precision),
+                ('Productos distintos', 'Cantidad promedio', c.productos_promedio),
+                ('Productos distintos', 'Diversidad categorias', c.productos_categorias),
+                ('Cantidad promedio', 'Frecuencia', c.frecuencia_promedio),
+                ('Cantidad promedio', 'Volumen total', c.volumen_promedio),
+                ('Cantidad promedio', 'Productos distintos', c.productos_promedio),
+                ('Cantidad promedio', 'Cantidad promedio', 1.0::double precision),
+                ('Cantidad promedio', 'Diversidad categorias', c.promedio_categorias),
+                ('Diversidad categorias', 'Frecuencia', c.frecuencia_categorias),
+                ('Diversidad categorias', 'Volumen total', c.volumen_categorias),
+                ('Diversidad categorias', 'Productos distintos', c.productos_categorias),
+                ('Diversidad categorias', 'Cantidad promedio', c.promedio_categorias),
+                ('Diversidad categorias', 'Diversidad categorias', 1.0::double precision)
+        ) AS matriz(variable_x, variable_y, correlacion)
         """
     )
 

@@ -22,7 +22,7 @@ def get_db():
         database=DB_NAME,
         user=DB_USER,
         password=DB_PASSWORD,
-        connect_timeout=10,
+        connect_timeout=2,
         options="-c client_encoding=UTF8",
         cursor_factory=RealDictCursor
     )

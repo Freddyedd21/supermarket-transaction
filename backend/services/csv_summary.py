@@ -59,6 +59,49 @@ def _transaction_files():
     return sorted(TRANSACTIONS_DIR.glob("*_Tran.csv"))
 
 
+def _reference_signature():
+    return tuple(
+        (str(path.name), path.stat().st_mtime_ns, path.stat().st_size)
+        for path in (CATEGORIES_FILE, PRODUCT_CATEGORY_FILE)
+    )
+
+
+def _transactions_signature():
+    return tuple(
+        (str(path.name), path.stat().st_mtime_ns, path.stat().st_size)
+        for path in _transaction_files()
+    )
+
+
+@lru_cache(maxsize=4)
+def _load_reference_data(signature):
+    del signature
+    categories = _read_categories()
+    return categories, _read_first_product_categories(categories)
+
+
+@lru_cache(maxsize=4)
+def _load_transaction_rows(signature):
+    del signature
+    rows = []
+
+    for file_path in _transaction_files():
+        with file_path.open("r", encoding="utf-8") as file:
+            for line in file:
+                line = line.strip()
+                if not line:
+                    continue
+
+                parts = line.split("|")
+                if len(parts) != 4:
+                    continue
+
+                date, store_id, client_id, products_text = [part.strip() for part in parts]
+                rows.append((date, store_id, client_id, products_text))
+
+    return tuple(rows)
+
+
 def _top_counter(counter, key_name, value_name, limit=10):
     return [
         {key_name: int(key) if str(key).isdigit() else key, value_name: value}
@@ -73,11 +116,14 @@ def _weekday_index(value):
         return None
 
 
-@lru_cache(maxsize=32)
 def build_summary(store=None, start_date=None, end_date=None):
-    categories = _read_categories()
-    product_categories = _read_first_product_categories(categories)
-    transaction_files = _transaction_files()
+    return _build_summary_cached(store, start_date, end_date, _reference_signature(), _transactions_signature())
+
+
+@lru_cache(maxsize=32)
+def _build_summary_cached(store=None, start_date=None, end_date=None, reference_signature=None, transactions_signature=None):
+    _, product_categories = _load_reference_data(reference_signature)
+    transaction_rows = _load_transaction_rows(transactions_signature)
 
     product_units = Counter()
     category_units = Counter()
@@ -95,53 +141,43 @@ def build_summary(store=None, start_date=None, end_date=None):
     min_date = None
     max_date = None
 
-    for file_path in transaction_files:
-        with file_path.open("r", encoding="utf-8") as file:
-            for line in file:
-                line = line.strip()
-                if not line:
-                    continue
+    for date, store_id, client_id, products_text in transaction_rows:
+        stores.add(store_id)
+        min_date = date if min_date is None or date < min_date else min_date
+        max_date = date if max_date is None or date > max_date else max_date
 
-                parts = line.split("|")
-                if len(parts) != 4:
-                    continue
+        matches_filters = True
+        if store and store_id != store:
+            matches_filters = False
+        if start_date and date < start_date:
+            matches_filters = False
+        if end_date and date > end_date:
+            matches_filters = False
+        if not matches_filters:
+            continue
 
-                date, store_id, client_id, products_text = [part.strip() for part in parts]
-                stores.add(store_id)
-                min_date = date if min_date is None or date < min_date else min_date
-                max_date = date if max_date is None or date > max_date else max_date
+        products = [product for product in products_text.split() if product]
+        if not products:
+            continue
 
-                products = [product for product in products_text.split() if product]
-                if not products:
-                    continue
+        total_units += len(products)
+        filtered_transactions += 1
+        clients.add(client_id)
+        client_transactions[client_id] += 1
+        client_units[client_id] += len(products)
+        daily_transactions[date] += 1
+        daily_units[date] += len(products)
 
-                matches_filters = True
-                if store and store_id != store:
-                    matches_filters = False
-                if start_date and date < start_date:
-                    matches_filters = False
-                if end_date and date > end_date:
-                    matches_filters = False
+        weekday = _weekday_index(date)
+        if weekday is not None:
+            weekday_transactions[weekday] += 1
+            weekday_units[weekday] += len(products)
 
-                if matches_filters:
-                    total_units += len(products)
-                    filtered_transactions += 1
-                    clients.add(client_id)
-                    client_transactions[client_id] += 1
-                    client_units[client_id] += len(products)
-                    daily_transactions[date] += 1
-                    daily_units[date] += len(products)
-
-                    weekday = _weekday_index(date)
-                    if weekday is not None:
-                        weekday_transactions[weekday] += 1
-                        weekday_units[weekday] += len(products)
-
-                    for product_id in products:
-                        product_units[product_id] += 1
-                        category_name = product_categories.get(product_id)
-                        if category_name:
-                            category_units[category_name] += 1
+        for product_id in products:
+            product_units[product_id] += 1
+            category_name = product_categories.get(product_id)
+            if category_name:
+                category_units[category_name] += 1
 
     top_clients = [
         {
