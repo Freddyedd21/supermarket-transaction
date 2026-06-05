@@ -5,6 +5,8 @@ import json
 from math import log1p, sqrt
 from pathlib import Path
 
+from config.database import query_all, query_one
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT = PROJECT_ROOT / "data" / "DataSet"
@@ -73,7 +75,116 @@ def _client_template():
     }
 
 
-def _load_market_model():
+ADVANCED_DB_TABLES = [
+    "metricas_clientes",
+    "cliente_productos",
+    "producto_conteos",
+    "producto_coocurrencias",
+    "kpis_globales",
+]
+
+
+def _table_exists(table_name):
+    row = query_one(f"SELECT to_regclass('public.{table_name}') AS table_name")
+    return bool(row and row.get("table_name"))
+
+
+def _advanced_database_ready():
+    try:
+        return all(_table_exists(table_name) for table_name in ADVANCED_DB_TABLES)
+    except Exception:
+        return False
+
+
+def _load_market_model_from_database():
+    client_rows = query_all(
+        """
+        SELECT
+            cliente_id,
+            frecuencia_transacciones,
+            productos_distintos,
+            volumen_total,
+            diversidad_categorias,
+            cantidad_promedio
+        FROM metricas_clientes
+        """
+    )
+
+    client_product_rows = query_all(
+        """
+        SELECT cliente_id, id_producto
+        FROM cliente_productos
+        """
+    )
+
+    product_rows = query_all(
+        """
+        SELECT id_producto, unidades_vendidas
+        FROM producto_conteos
+        """
+    )
+
+    pair_rows = query_all(
+        """
+        SELECT id_producto_a, id_producto_b, compras_conjuntas
+        FROM producto_coocurrencias
+        """
+    )
+
+    kpis = query_one(
+        """
+        SELECT total_transacciones, total_unidades_vendidas
+        FROM kpis_globales
+        LIMIT 1
+        """
+    ) or {}
+
+    client_products = defaultdict(set)
+    for row in client_product_rows:
+        client_products[str(row["cliente_id"])].add(str(row["id_producto"]))
+
+    product_counts = Counter(
+        {
+            str(row["id_producto"]): int(row["unidades_vendidas"])
+            for row in product_rows
+        }
+    )
+
+    neighbors = defaultdict(list)
+    for row in pair_rows:
+        product_a = str(row["id_producto_a"])
+        product_b = str(row["id_producto_b"])
+        pair_count = int(row["compras_conjuntas"])
+        neighbors[product_a].append((product_b, pair_count))
+        neighbors[product_b].append((product_a, pair_count))
+
+    for product_id in neighbors:
+        neighbors[product_id].sort(key=lambda item: (-item[1], item[0]))
+
+    normalized_client_rows = [
+        {
+            "cliente_id": str(row["cliente_id"]),
+            "frecuencia_transacciones": int(row["frecuencia_transacciones"]),
+            "productos_distintos": int(row["productos_distintos"]),
+            "volumen_total": int(row["volumen_total"]),
+            "diversidad_categorias": int(row["diversidad_categorias"]),
+            "cantidad_promedio": float(row["cantidad_promedio"]),
+        }
+        for row in client_rows
+    ]
+
+    return {
+        "client_rows": normalized_client_rows,
+        "client_products": {key: value for key, value in client_products.items()},
+        "product_counts": product_counts,
+        "neighbors": dict(neighbors),
+        "total_transactions": int(kpis.get("total_transacciones") or 0),
+        "total_units": int(kpis.get("total_unidades_vendidas") or 0),
+        "source": "PostgreSQL",
+    }
+
+
+def _load_market_model_from_csv():
     categories = _read_categories()
     product_categories = _read_first_product_categories(categories)
     clients = defaultdict(_client_template)
@@ -153,7 +264,18 @@ def _load_market_model():
         "neighbors": dict(neighbors),
         "total_transactions": total_transactions,
         "total_units": total_units,
+        "source": "CSV",
     }
+
+
+def _load_market_model():
+    if _advanced_database_ready():
+        try:
+            return _load_market_model_from_database()
+        except Exception as exc:
+            print(f"[Avanzado] No se pudo construir el modelo desde PostgreSQL; usando CSV. Detalle: {type(exc).__name__}: {exc}")
+
+    return _load_market_model_from_csv()
 
 
 def _standardize(rows):
@@ -395,6 +517,7 @@ def _build_model():
         "variables": FEATURE_NAMES,
         "clusters": clusters,
         "puntos": sampled_points,
+        "fuente_modelo": model.get("source", "CSV"),
         "interpretacion_general": (
             "La segmentacion separa clientes por frecuencia, volumen, variedad de productos "
             "y diversidad de categorias. Los valores fueron escalados antes de aplicar K-Means."
@@ -456,11 +579,20 @@ def build_advanced_summary(use_cache=True):
             "recomendaciones_producto": recommend_for_product(default_product) if default_product != "" else [],
         },
         "regeneracion": {
-            "descripcion": "Los modelos se recalculan leyendo los CSV del proyecto. Al incorporar nuevos datos, refresca la cache o vuelve a ejecutar Spark para persistir tablas.",
+            "descripcion": (
+                "El flujo actual usa los CSV como fuente cruda, Spark para regenerar tablas analiticas en PostgreSQL "
+                "y una cache JSON para acelerar la vista avanzada. Al incorporar datos nuevos se recalculan KPIs, "
+                "metricas por cliente, segmentacion K-Means y recomendaciones."
+            ),
+            "alternativa_sin_csv": (
+                "Para no depender de archivos CSV, la misma arquitectura puede recibir datos en una tabla transaccional "
+                "de PostgreSQL o mediante un endpoint de carga. En ese caso Spark o el backend leerian esa tabla como "
+                "fuente primaria y el boton Actualizar modelos solo refrescaria los resultados derivados."
+            ),
             "pasos": [
-                "Agregar o reemplazar archivos en data/DataSet/Transactions.",
-                "Ejecutar python .\\spark_processing\\aggregations.py para regenerar tablas de PostgreSQL.",
-                "Usar el boton Actualizar modelos en la vista avanzada para recalcular segmentacion y recomendaciones desde los CSV.",
+                "Ingresar nuevos datos en la fuente configurada: archivos en data/DataSet/Transactions o una tabla transaccional en PostgreSQL.",
+                "Ejecutar el pipeline de agregacion para reconstruir KPIs, serie temporal, metricas de clientes y tablas analiticas.",
+                "Usar el boton Actualizar modelos para recalcular segmentacion, reglas de asociacion y cache del analisis avanzado.",
             ],
         },
     }

@@ -84,6 +84,7 @@ const initialAdvancedData = {
   },
   regeneracion: {
     descripcion: "",
+    alternativa_sin_csv: "",
     pasos: [],
   },
 };
@@ -964,9 +965,16 @@ function RegenerationPanel({ data, onRefresh, loading }) {
       <div className="insight-list">
         <div>
           <span>Flujo implementado</span>
-          <strong>CSV, Spark y cache del modelo</strong>
+          <strong>Fuente, agregacion y cache del modelo</strong>
           <p>{data.descripcion}</p>
         </div>
+        {data.alternativa_sin_csv ? (
+          <div>
+            <span>Alternativa sin CSV manual</span>
+            <strong>PostgreSQL o endpoint de carga</strong>
+            <p>{data.alternativa_sin_csv}</p>
+          </div>
+        ) : null}
       </div>
       <ol className="process-list">
         {data.pasos.map((step, index) => (
@@ -1343,7 +1351,10 @@ function AdvancedAnalysisPage() {
                 <div>
                   <span>Segmentacion de clientes</span>
                   <strong>K-Means con 4 grupos</strong>
-                  <p>{data.segmentacion.interpretacion_general}</p>
+                  <p>
+                    {data.segmentacion.interpretacion_general}
+                    {data.segmentacion.fuente_modelo ? ` Fuente del modelo: ${data.segmentacion.fuente_modelo}.` : ""}
+                  </p>
                 </div>
                 <div>
                   <span>Recomendador</span>
