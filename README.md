@@ -11,14 +11,14 @@ Archivos principales:
 - `data/DataSet/Transactions/*_Tran.csv`
 	- **Rol:** Transacciones (tickets)
 	- **Formato:** sin encabezado, separado por `|`
-	- **Columnas:** `Fecha | Tienda_ID | Ticket_ID | Productos`
+	- **Columnas:** `Fecha | Tienda_ID | Cliente_ID o identificador recurrente | Productos`
 	- **Nota:** `Productos` es un string con **IDs de producto separados por espacios** (ej: `"20 3 1"`).
 
 - `data/DataSet/Products/ProductCategory.csv`
-	- **Rol:** puente Producto ↔ Categoría
+	- **Rol:** puente producto-categoría para el ranking de categorías
 	- **Formato:** con encabezado, separado por `|`
 	- **Columnas:** `v.Code_pr | v.code`
-	- **Nota:** `v.Code_pr` = ID del producto, `v.code` = ID de la categoría.
+	- **Nota:** puede asignar varias categorías a un mismo producto; para evitar duplicados se toma solo la primera categoría encontrada por producto.
 
 - `data/DataSet/Products/Categories.csv`
 	- **Rol:** dimensión de categorías (diccionario)
@@ -33,8 +33,8 @@ El dataset se comporta como un modelo relacional tipo **estrella**:
 | Archivo | Rol en el negocio | Columnas detectadas | Observación clave |
 |---|---|---|---|
 | `*_Tran.csv` | Tabla de hechos (Fact) | `Fecha | Tienda_ID | Ticket_ID | Productos` | Cada fila representa un ticket/canasta; `Productos` viene “compactado” en un string. |
-| `ProductCategory.csv` | Tabla puente | `v.Code_pr | v.code` | Conecta cada producto con su categoría. |
-| `Categories.csv` | Dimensión | `ID_Categoria | Nombre_Categoria` | Traduce el código de categoría a un nombre legible. |
+| `ProductCategory.csv` | Tabla puente | `v.Code_pr | v.code` | Conecta cada producto con su categoría; si hay varias relaciones, se usa la primera. |
+| `Categories.csv` | Dimensión | `ID_Categoria | Nombre_Categoria` | Traduce el código vendido a un nombre legible de categoría. |
 
 ## Hallazgos críticos para el código
 
@@ -43,9 +43,15 @@ El dataset se comporta como un modelo relacional tipo **estrella**:
 	- Significa que el 1 de enero de 2013, en la tienda 102, el ticket 530 incluye los productos `20`, `3` y `1`.
 	- Para poder contar y agregar correctamente, la estrategia es: **split** de `Productos` y luego **explode** para crear una fila por producto.
 
-- **El “eslabón perdido” de clientes:**
-	- El taller menciona “ID de cliente”, pero en las transacciones **no aparece** una columna de cliente.
-	- Para la entrega analítica, se puede interpretar cada **Ticket_ID como un evento de compra único** (o proxy de cliente en ese instante).
+- **Cliente / identificador recurrente:**
+	- La tercera columna de transacciones se usa como `cliente_id` porque se repite en el tiempo: hay 131.186 valores distintos frente a 1.108.987 transacciones.
+	- Si el origen del dataset la documenta como ticket, debe explicarse como un identificador recurrente/proxy para el análisis de frecuencia.
+
+- **Lectura correcta de categorías:**
+	- El análisis de top 10 categorías cruza cada código de `Productos` con `ProductCategory.csv` y luego con `Categories.csv`.
+	- Si un producto aparece asociado a varias categorías, se toma solo la primera relación encontrada en `ProductCategory.csv`.
+	- Así cada producto vendido aporta una sola unidad a una sola categoría y se evita duplicar volúmenes.
+	- Los códigos vendidos sin relación en `ProductCategory.csv` se excluyen del ranking de categorías.
 
 - **Importante para visualizaciones:**
 	- Si no se incorpora `Categories.csv`, los análisis por categoría mostrarán solo IDs (`1, 2, 3...`) en lugar de nombres (ej: `YOGURT`, `PANES-TOSTADAS`).
@@ -58,15 +64,12 @@ Flujo recomendado de transformaciones y cruces (joins):
 [Tickets con String de Productos]
 	|
 	v  (Split & Explode)
-[Fila por cada Producto Individual] --- (Join por producto_id) ---> [ProductCategory.csv]
-	|
-	v  (Join por categoria_id)
-[Categories.csv]
+[Fila por cada Código Vendido] ---> [ProductCategory.csv: primera categoría] ---> [Categories.csv]
 ```
 
 Salida esperada (tabla unificada) para facilitar KPIs y gráficos:
 
-- `fecha, tienda_id, ticket_id, producto_id, categoria_id, nombre_categoria`
+- `fecha, tienda_id, cliente_id, id_producto, nombre_categoria`
 
 ## Probar localmente (Spark)
 
@@ -122,6 +125,32 @@ Endpoints principales:
 
 - `GET http://127.0.0.1:8000/api/analytics/kpis`
 - `GET http://127.0.0.1:8000/api/analytics/top_productos`
+- `GET http://127.0.0.1:8000/api/analytics/serie_tiempo`
+- `GET http://127.0.0.1:8000/api/analytics/boxplot_clientes`
+- `GET http://127.0.0.1:8000/api/analytics/correlacion_clientes`
+
+## Frontend
+
+```powershell
+cd .\frontend
+npm install
+npm run dev
+```
+
+Vistas principales:
+
+- `http://localhost:5173/` - Resumen Ejecutivo.
+- `http://localhost:5173/visualizaciones` - Visualizaciones Analíticas: serie de tiempo, boxplot y heatmap de correlación.
+- `http://localhost:5173/avanzado` - Análisis Avanzado: segmentación K-Means, recomendador y regeneración de modelos.
+
+Si agregas nuevas transacciones, regenera las tablas y refresca los modelos:
+
+```powershell
+cd .\spark_processing
+python .\aggregations.py
+```
+
+Luego entra a `http://localhost:5173/avanzado` y usa el botón **Actualizar modelos**.
 
 ## Pregunta de validación
 
